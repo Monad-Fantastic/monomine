@@ -80,7 +80,12 @@
     </footer>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js" defer></script>
+ <script type="module">
+  import * as ethersMod from "https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.min.js";
+  // expose as global so existing app.js continues to work unchanged
+  window.ethers = ethersMod;
+</script>
+<script type="module" src="app.js?v=5"></script>
   <script src="app.js" defer></script>
 </body>
 </html>
