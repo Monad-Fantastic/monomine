@@ -58,6 +58,11 @@ async function init() {
 
 async function connect() {
   try {
+    const statusEl   = $$("#status");
+    const mineBtn    = $$("#mineBtn");
+    const submitBtn  = $$("#submitBtn");
+    const viewAddrEl = $$("#viewAddr");
+
     provider = new ethers.BrowserProvider(window.ethereum, "any");
     await provider.send("eth_requestAccounts", []);
     signer = await provider.getSigner();
@@ -65,16 +70,21 @@ async function connect() {
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
-    $$("#status").textContent = `Connected: ${short(account)}`;
-    $$("#mineBtn").disabled = false;
-    $$("#submitBtn").disabled = false;
+    if (statusEl) statusEl.textContent = `Connected: ${short(account)}`;
+    if (mineBtn) mineBtn.disabled = false;
+    if (submitBtn) submitBtn.disabled = false;
 
-    $$("#viewAddr").href = EXPLORER_ADDR_PREFIX + account;
-    $$("#viewAddr").style.display = "inline-block";
+    if (viewAddrEl) {
+      viewAddrEl.href = EXPLORER_ADDR_PREFIX + account;
+      viewAddrEl.style.display = "inline-block";
+    }
   } catch (e) {
-    $$("#status").textContent = `Connect failed: ${e.shortMessage || e.message}`;
+    const statusEl = $$("#status");
+    if (statusEl) statusEl.textContent = `Connect failed: ${e.shortMessage || e.message}`;
+    console.error(e);
   }
 }
+
 
 function short(addr) {
   return addr ? addr.slice(0, 6) + "…" + addr.slice(-4) : "—";
