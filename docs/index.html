@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  
   <title>MonoMine — Monad Game Jam</title>
   <link rel="stylesheet" href="style.css"/>
 </head>
@@ -81,12 +82,11 @@
   </main>
 
 <script type="module">
-  // Load ESM ethers (no eval) and expose it as global for app.js
-  import * as ethersMod from "https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.min.js";
+  // Load a pure ESM build of ethers (no eval)
+  import * as ethersMod from "https://esm.sh/ethers@6.13.2";
   window.ethers = ethersMod;
 
-  // Then load your app (cache-busted)
-  import "./app.js?v=6";
+  import "./app.js?v=7";
 </script>
 </body>
 </html>
