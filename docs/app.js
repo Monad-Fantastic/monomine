@@ -15,11 +15,23 @@ async function loadAbi() {
   return j.abi || j; 
 }
 
+
+
 // ====== DOM helpers ======
 const $$ = (id) => document.getElementById(id);
 const on = (id, handler) => { const el = $$(id); if (el) el.onclick = handler; };
 
 document.addEventListener("DOMContentLoaded", init);
+
+// ====== State ======
+let readProvider, provider, signer, contract, writeContract, account;
+let seedHex = null;
+let mining = false;
+let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
+let hashes = 0;
+let lastTick = Date.now();
+
+
 
 async function init() {
   const abi = await loadAbi();
@@ -75,14 +87,20 @@ async function refreshState() {
     const bestS = await contract.bestOfDay(day);
     seedHex = seed;
 
-    $$("#day").textContent = day.toString();
-    $$("#seed").textContent = seedHex;
+    const dayEl = $$("#day");
+    if (dayEl) dayEl.textContent = day.toString();
 
-    const leaderStr =
-      bestS.player === ethers.ZeroAddress
-        ? "—"
-        : `${short(bestS.player)} (FID ${bestS.fid}) @ ${bestS.bestHash}`;
-    $$("#leader").textContent = leaderStr;
+    const seedEl = $$("#seed");
+    if (seedEl) seedEl.textContent = seedHex;
+
+    const leaderEl = $$("#leader");
+    if (leaderEl) {
+      const leaderStr =
+        bestS.player === ethers.ZeroAddress
+          ? "—"
+          : `<a class="link" target="_blank" href="${EXPLORER_ADDR_PREFIX}${bestS.player}">${short(bestS.player)}</a> (FID ${bestS.fid}) @ ${bestS.bestHash}`;
+      leaderEl.innerHTML = leaderStr;
+    }
   } catch (e) {
     console.error(e);
   }
@@ -134,15 +152,21 @@ async function mineLoop() {
 }
 
 function updateRate() {
+  const rateEl = $$("#rate");
+  if (!rateEl) return;
+  if (typeof lastTick !== "number") lastTick = Date.now();  // safety init
   const now = Date.now();
   const dt = (now - lastTick) / 1000;
   if (dt >= 0.95) {
     const rate = Math.round(hashes / dt);
-    $$("#rate").textContent = `hashes/s: ${rate}`;
+    rateEl.textContent = `hashes/s: ${rate}`;
     hashes = 0;
     lastTick = now;
   }
 }
+
+const useRelayEl = $$("#useRelay");
+const useRelay = () => useRelayEl ? useRelayEl.checked : true; // default on
 
 async function submitBest() {
   if (!signer) await connect();
@@ -150,10 +174,10 @@ async function submitBest() {
     $$("#txMsg").textContent = "Mine first to get a nonce.";
     return;
   }
-  $$("#txMsg").textContent = $$("#useRelay").checked ? "Relaying (gasless)..." : "Submitting tx…";
+  $$("#txMsg").textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
 
   try {
-    if ($$("#useRelay").checked) {
+    if (useRelay()) {
       // Gasless path via TMF relayer
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const res = await submitViaRelay(data);
