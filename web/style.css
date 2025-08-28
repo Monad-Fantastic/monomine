@@ -1,0 +1,65 @@
+:root {
+  --bg: #0b0d12;
+  --card: #121622;
+  --border: #1f2636;
+  --text: #e7ecf3;
+  --muted: #9fb0c3;
+  --accent: #5aa2ff;
+  --accent-2: #8c5aff;
+  --pill: #14233a;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: radial-gradient(1200px 800px at 80% -10%, #0f1431 0%, var(--bg) 60%);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.wrap { max-width: 1040px; margin: 0 auto; padding: 24px 16px; }
+h1 { margin: 16px 0 6px; font-size: 28px; line-height: 1.2; }
+.sub { margin: 0 0 12px; color: var(--muted); }
+.pill { font-size: 12px; background: var(--pill); border: 1px solid var(--border); color: var(--accent); padding: 2px 8px; border-radius: 999px; vertical-align: middle; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(280px,1fr)); gap: 16px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+.card.wide { grid-column: 1 / -1; }
+
+.row { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+
+button {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+button[disabled] { opacity: .6; cursor: not-allowed; }
+
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+
+.leader { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); }
+
+a.link { color: var(--accent); text-decoration: none; }
+a.link:hover { text-decoration: underline; }
+
+footer { margin-top: 24px; text-align: center; opacity: .8; }
+
+.card.callout {
+  border-color: #27406b;
+  background: linear-gradient(180deg, rgba(24,34,58,.8) 0%, rgba(18,22,34,1) 100%);
+}
+.card.callout h3 { margin-top: 4px; }
+.card.callout ol { margin: 8px 0 0 18px; }

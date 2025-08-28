@@ -1,0 +1,20 @@
+# Foundry build artifacts
+out/
+cache/
+broadcast/
+
+# Dependencies
+lib/
+
+# Env files
+.env
+.env.*
+
+# Node / frontend junk (just in case)
+node_modules/
+dist/
+build/
+
+# OS junk
+.DS_Store
+Thumbs.db

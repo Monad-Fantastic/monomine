@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>MonoMine — Monad Game Jam</title>
+  <link rel="stylesheet" href="style.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.2/dist/ethers.umd.min.js"></script>
+</head>
+<body>
+  <header class="wrap">
+    <h1>MonoMine <span class="pill">Monad Testnet</span></h1>
+    <p class="sub">Daily micro-PoW. TMF Passport required. Gasless supported via TMF EntryForwarder.</p>
+  </header>
+
+  <main class="wrap">
+    <section class="grid">
+      <div class="card">
+        <h3>Wallet</h3>
+        <button id="connectBtn">Connect</button>
+        <div class="muted" id="status">Not connected</div>
+        <div class="row">
+          <button id="mintBtn" class="ghost">Mint Passport</button>
+          <a id="viewAddr" class="link" target="_blank" rel="noreferrer">View on Explorer</a>
+        </div>
+      </div>
+
+      <div class="card callout">
+        <h3>No wallet? No problem.</h3>
+        <p class="muted">
+            You can play <b>gasless</b> using your Farcaster ID with <b>Monad Fantastic (TMF) Passport</b>.
+        </p>
+        <ol class="muted small">
+            <li>Click <b>Mint Passport</b> — TMF will create/mint for you (no tokens needed).</li>
+            <li>Return here and click <b>Connect</b> (your new Passport-linked wallet will work).</li>
+            <li>Hit <b>Start Mining</b> → <b>Submit Best</b> (keep <b>Gasless via TMF</b> checked).</li>
+        </ol>
+        <div class="row">
+            <button id="mintBtn2">Mint Passport</button>
+            <a class="link" target="_blank" id="whatIsPassport">What is TMF Passport?</a>
+        </div>
+        </div>
+
+
+      <div class="card">
+        <h3>Today</h3>
+        <div>Epoch (day): <b id="day">—</b></div>
+        <div>Seed: <code id="seed">0x</code></div>
+        <div class="row">
+          <button id="rollBtn" class="ghost">Roll if needed</button>
+          <span id="rollMsg" class="muted"></span>
+        </div>
+        <div class="leader">
+          <div class="muted">Current leader</div>
+          <div id="leader">—</div>
+        </div>
+      </div>
+
+      
+
+      <div class="card wide">
+        <h3>Mine</h3>
+        <div class="row">
+          <button id="mineBtn" disabled>Start Mining</button>
+          <button id="submitBtn" disabled>Submit Best</button>
+          <label class="muted small"><input type="checkbox" id="useRelay" checked/> Gasless via TMF</label>
+        </div>
+        <div>Best hash: <code id="bestHash">—</code></div>
+        <div>Best nonce: <code id="bestNonce">—</code></div>
+        <div id="rate" class="muted small">hashes/s: —</div>
+        <div id="txMsg" class="muted"></div>
+        <div class="row">
+          <button id="shareBtn" class="ghost">Share on Farcaster</button>
+          <span class="muted small">Tell your friends your best hash ✨</span>
+        </div>
+      </div>
+    </section>
+
+    <footer class="muted small">
+      Open source • MIT • Built for Monad Game Jam • Requires TMF Passport • Uses EIP-2771 for gasless
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
