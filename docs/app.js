@@ -16,38 +16,33 @@ async function loadAbi() {
 }
 
 // ====== DOM helpers ======
-const $ = (s) => document.querySelector(s);
 const $$ = (id) => document.getElementById(id);
+const on = (id, handler) => { const el = $$(id); if (el) el.onclick = handler; };
 
-let readProvider, provider, signer, contract, writeContract, account;
-let seedHex = null;
-let mining = false;
-let best = {
-  hash: null,
-  nonce: null,
-  value: 2n ** 256n - 1n
-};
-let hashes = 0, lastTick = Date.now();
+document.addEventListener("DOMContentLoaded", init);
 
-(async function init() {
+async function init() {
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
 
-  // Bind UI
-  $$("#mintBtn2").onclick = () => window.open(PASSPORT_MINT_URL, "_blank");
-  $$("#whatIsPassport").href = PASSPORT_MINT_URL; 
-  $$("#connectBtn").onclick = connect;
-  $$("#mineBtn").onclick = toggleMine;
-  $$("#submitBtn").onclick = submitBest;
-  $$("#shareBtn").onclick = shareCast;
-  $$("#rollBtn").onclick = rollIfNeeded;
-  $$("#mintBtn").onclick = () => window.open(PASSPORT_MINT_URL, "_blank");
-  $$("#viewAddr").style.display = "none";
+  // Null-safe bindings
+  on("connectBtn", connect);
+  on("mineBtn", toggleMine);
+  on("submitBtn", submitBest);
+  on("shareBtn", shareCast);
+  on("rollBtn", rollIfNeeded);
+  on("mintBtn", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  on("mintBtn2", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  const infoLink = $$("#whatIsPassport");
+  if (infoLink) infoLink.href = PASSPORT_MINT_URL;
+
+  const viewAddr = $$("#viewAddr");
+  if (viewAddr) viewAddr.style.display = "none";
 
   await refreshState();
   setInterval(updateRate, 1000);
-})();
+}
 
 async function connect() {
   try {
