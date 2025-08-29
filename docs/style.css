@@ -65,6 +65,7 @@ footer { margin-top: 24px; text-align: center; opacity: .8; }
 .card.callout ol { margin: 8px 0 0 18px; }
 
 
-.badge { display:inline-block; padding:2px 8px; border:1px solid var(--border); border-radius:999px; }
-.badge.ok { color:#6edc82; border-color:#2a5a35; background:#102315; }
-.badge.no { color:#ffb86b; border-color:#5a3b2a; background:#231810; }
+.badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; }
+.badge.ok { background:#163d2e; color:#4ff0b0; }
+.badge.no { background:#3d1622; color:#ff6a7a; }
+.wallet-help { margin-top:10px; }

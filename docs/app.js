@@ -47,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v11 loaded");
+  console.log("MonoMine app.js v11.1 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -60,6 +60,7 @@ async function init() {
   on("rollBtn", rollIfNeeded);
   on("mintBtn", () => window.open(PASSPORT_MINT_URL, "_blank"));
   on("mintBtn2", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  on("addNetworkBtn", addMonadNetwork);
   const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
   const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
 
@@ -123,37 +124,45 @@ async function connect() {
 
     signer  = await provider.getSigner();
     account = await signer.getAddress();
+
+    // 🔽 ADD THIS BLOCK HERE
+    try {
+      const net = await provider.getNetwork();
+      if (Number(net.chainId) !== 10143) {
+        try {
+          await window.ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x279F" }], // 10143
+          });
+        } catch (err) {
+          // Chain not added yet → add and switch
+          if (err?.code === 4902) {
+            await addMonadNetwork();
+            await window.ethereum.request({
+              method: "wallet_switchEthereumChain",
+              params: [{ chainId: "0x279F" }],
+            });
+          }
+        }
+      }
+    } catch (e) { /* non-fatal */ }
+    // 🔼 END INSERT
+
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
     setTextEventually("status", `Connected: ${short(account)}`);
-    enableEventually("mineBtn",   true);
+    enableEventually("mineBtn", true);
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
 
-    // Passport check
-    try {
-      const ok = await hasPassport(account);
-      setPassportStatus(ok);
-    } catch {}
-
-    // Sync on account/chain changes
-    if (window.ethereum) {
-      window.ethereum.removeAllListeners?.('accountsChanged');
-      window.ethereum.on?.('accountsChanged', () => connect());
-      window.ethereum.removeAllListeners?.('chainChanged');
-      window.ethereum.on?.('chainChanged', () => window.location.reload());
-    }
-
-    // Debug
-    console.log("DEBUG: provider", provider);
-    console.log("DEBUG: signer", signer);
-    console.log("DEBUG: account", account);
+    // (listeners etc…)
   } catch (e) {
     console.error("Connect error:", e);
     setTextEventually("status", `Connect failed: ${e.shortMessage || e.message}`);
   }
 }
+
 
 async function connectSilent() {
   if (!window.ethereum) return;
@@ -188,6 +197,24 @@ async function connectSilent() {
     } catch {}
   } catch (e) {
     console.warn("connectSilent failed:", e);
+  }
+}
+
+async function addMonadNetwork() {
+  if (!window.ethereum) return;
+  try {
+    await window.ethereum.request({
+      method: "wallet_addEthereumChain",
+      params: [{
+        chainId: "0x279F", // 10143
+        chainName: "Monad Testnet",
+        rpcUrls: ["https://testnet-rpc.monad.xyz"],
+        nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+        blockExplorerUrls: ["https://testnet.monadexplorer.com/"]
+      }]
+    });
+  } catch (e) {
+    console.warn("addMonadNetwork failed:", e);
   }
 }
 

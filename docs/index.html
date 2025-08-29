@@ -24,15 +24,30 @@
     <section class="grid">
       <div class="card">
         <h3>Wallet</h3>
-        <a href="https://docs.monad.xyz/guides/add-monad-to-wallet/metamask">Get Wallet!</a><br>
-        <button id="connectBtn">Connect</button>
+
+        <div class="row">
+          <button id="connectBtn">Connect</button>
+          <button id="addNetworkBtn" class="ghost">Add Monad Testnet</button>
+        </div>
+
         <div class="muted" id="status">Not connected</div>
-        <div class="muted small" id="passportStatus">Passport: —</div>
+        <div class="muted small">
+          <span id="passportStatus">Passport: —</span>
+        </div>
+
         <div class="row">
           <button id="mintBtn" class="ghost">Mint Passport</button>
           <a id="viewAddr" class="link" target="_blank" rel="noreferrer">View on Explorer</a>
         </div>
+
+        <p class="wallet-help small muted">
+          No wallet? <a class="link" target="_blank"
+            href="https://metamask.io/download.html">Get MetaMask</a> •
+          Need network? <a class="link" target="_blank"
+            href="https://docs.monad.xyz/guides/add-monad-to-wallet/metamask">Add Monad</a>
+        </p>
       </div>
+
 
       <div class="card callout">
         <h3>No wallet? Use Farcaster.</h3>
