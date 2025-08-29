@@ -141,12 +141,12 @@
   </main>
 
   <!-- Load ethers as a pure ESM build to avoid unsafe-eval -->
-  <script type="module">
-    import * as ethersMod from "https://esm.sh/ethers@6.13.2";
-    window.ethers = ethersMod; // make ethers available to both modules
+<script type="module">
+  import * as ethersMod from "https://esm.sh/ethers@6.13.2";
+  window.ethers = ethersMod;
 
-    import "./game.js";
-    import "./ui.js";
-  </script>
+  import "./game.js";
+  import "./ui.js";
+</script>
 </body>
 </html>

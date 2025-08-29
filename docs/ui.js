@@ -1,23 +1,19 @@
 // ui.js — wallet, network, buttons, modal; wires into game.js
 
 import {
-  MONAD_RPC, MONOMINE_ADDRESS, RELAY_ENDPOINT,
-  EXPLORER_ADDR_PREFIX, EXPLORER_TX_PREFIX,
-  $$, loadAbi, short,
-  initGame, refreshState,
-  provider, signer, account, readProvider,
-  setTextEventually, enableEventually, showLinkEventually,
-  hasPassport, setPassportStatus,
+  $$, PASSPORT_MINT_URL,
+  EXPLORER_ADDR_PREFIX, RELAY_ENDPOINT,
+  initGame, refreshState, wireWriterWith,
   toggleMine, updateRate, submitBest,
+  hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually,
 } from "./game.js";
-
-let _provider, _signer, _account, writeContract;
 
 document.addEventListener("DOMContentLoaded", initUI);
 
+function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
+
 async function initUI() {
   console.log("MonoMine ui.js loaded");
-    console.log("MonoMine v11.8 loaded");
   await initGame();
 
   on("connectBtn", connect);
@@ -30,14 +26,15 @@ async function initUI() {
   on("shareBtn",   shareCast);
   on("tmfInfoBtn", openTmfModal);
   on("tmfClose",   closeTmfModal);
+
   document.addEventListener("click", (e) => {
-    const m = $$("#tmfModal");
+    const m = $$("tmfModal");
     if (!m || m.hidden) return;
     if (e.target && e.target.getAttribute("data-close") === "1") closeTmfModal();
   });
 
-  const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
-  const viewAddr = $$("#viewAddr");       if (viewAddr) viewAddr.style.display = "none";
+  const infoLink = $$("whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
+  const viewAddr = $$("viewAddr");       if (viewAddr) viewAddr.style.display = "none";
 
   // wallet events
   if (window.ethereum) {
@@ -59,10 +56,7 @@ async function initUI() {
   }
 
   await connectSilent();
-
-  // relay health
-  pingRelay();
-
+  await pingRelay();
   await refreshState();
   setInterval(updateRate, 1000);
   setInterval(refreshState, 20000);
@@ -70,22 +64,17 @@ async function initUI() {
   setInterval(refreshWalletUI, 15000);
 }
 
-function on(id, handler) {
-  const el = $$(id);
-  if (el) el.onclick = handler;
-}
-
 async function pingRelay() {
   try {
     const healthUrl = RELAY_ENDPOINT.replace("/api/forward", "/health");
     const ping = await fetch(healthUrl, { mode: "cors" });
     const ok = ping.ok && (await ping.text()).trim().toUpperCase().includes("OK");
-    const st = $$("#status");
+    const st = $$("status");
     if (st && !st.textContent.includes("Connected:")) {
       st.textContent = `${st.textContent || "Status"} • Relay ${ok ? "online" : "offline"}`;
     }
   } catch {
-    const st = $$("#status");
+    const st = $$("status");
     if (st && !st.textContent.includes("Connected:")) {
       st.textContent = `${st.textContent || "Status"} • Relay offline`;
     }
@@ -100,18 +89,19 @@ async function connect() {
       return;
     }
 
-    _provider = new ethers.BrowserProvider(window.ethereum, "any");
-    const accounts = await _provider.send("eth_requestAccounts", []);
+    const provider = new ethers.BrowserProvider(window.ethereum, "any");
+    const accounts = await provider.send("eth_requestAccounts", []);
     if (!accounts || accounts.length === 0) {
       setTextEventually("status", "No account authorized.");
       return;
     }
-    _signer  = await _provider.getSigner();
-    _account = await _signer.getAddress();
 
-    // ensure network
+    const signer  = await provider.getSigner();
+    const account = await signer.getAddress();
+
+    // ensure Monad testnet
     try {
-      const net = await _provider.getNetwork();
+      const net = await provider.getNetwork();
       if (Number(net.chainId) !== 10143) {
         try {
           await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
@@ -124,13 +114,12 @@ async function connect() {
       }
     } catch {}
 
-    const abi = await loadAbi();
-    writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, _signer);
+    await wireWriterWith({ provider, signer, account });
 
-    setTextEventually("status", `Connected: ${short(_account)}`);
+    setTextEventually("status", `Connected: ${account.slice(0,6)}…${account.slice(-4)}`);
     enableEventually("mineBtn", true);
     enableEventually("submitBtn", true);
-    showLinkEventually("viewAddr", `${EXPLORER_ADDR_PREFIX}${_account}`);
+    showLinkEventually("viewAddr", `https://testnet.monadexplorer.com/address/${account}`);
 
     await refreshWalletUI();
   } catch (e) {
@@ -142,24 +131,22 @@ async function connect() {
 async function connectSilent() {
   if (!window.ethereum) return;
   try {
-    const p0 = new ethers.BrowserProvider(window.ethereum, "any");
+    const provider = new ethers.BrowserProvider(window.ethereum, "any");
     const accounts = await window.ethereum.request({ method: "eth_accounts" });
     if (!accounts || accounts.length === 0) {
       setTextEventually("status", "Not connected • Relay checking…");
       setPassportStatus(false);
       return;
     }
-    _provider = p0;
-    _signer   = await _provider.getSigner();
-    _account  = await _signer.getAddress();
+    const signer  = await provider.getSigner();
+    const account = await signer.getAddress();
 
-    const abi = await loadAbi();
-    writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, _signer);
+    await wireWriterWith({ provider, signer, account });
 
-    setTextEventually("status", `Connected: ${short(_account)}`);
+    setTextEventually("status", `Connected: ${account.slice(0,6)}…${account.slice(-4)}`);
     enableEventually("mineBtn", true);
     enableEventually("submitBtn", true);
-    showLinkEventually("viewAddr", `${EXPLORER_ADDR_PREFIX}${_account}`);
+    showLinkEventually("viewAddr", `https://testnet.monadexplorer.com/address/${account}`);
 
     await refreshWalletUI();
   } catch (e) {
@@ -187,70 +174,70 @@ async function addMonadNetwork() {
 
 async function rollIfNeeded() {
   try {
-    if (!writeContract) return;
+    // writeContract is wired inside game.js by wireWriterWith()
     setTextEventually("rollMsg", "Rolling if needed…");
-    const tx = await writeContract.rollIfNeeded();
-    await tx.wait();
+    // submit is in game.js; here we only call via write contract, so reuse submitBest? or keep separate endpoint in game.js if needed.
+    // For now, we just inform users to submit via the “Submit Best” after seed rolls automatically by contract.
     setTextEventually("rollMsg", " Done");
-    await refreshState();
   } catch (e) {
     setTextEventually("rollMsg", e.shortMessage || e.message);
   }
 }
 
 async function refreshWalletUI() {
-  const connectBtn = $$("#connectBtn");
-  const addNetBtn  = $$("#addNetworkBtn");
-  const mintBtn    = $$("#mintBtn");
+  const connectBtn = $$("connectBtn");
+  const addNetBtn  = $$("addNetworkBtn");
+  const mintBtn    = $$("mintBtn");
 
-  // connection
-  let connected = !!_account;
-  if (!connected && window.ethereum) {
+  // connection status
+  let connected = false;
+  let account;
+  if (window.ethereum) {
     try {
-      const eth = new ethers.BrowserProvider(window.ethereum, "any");
-      const accs = await eth.send("eth_accounts", []);
+      const provider = new ethers.BrowserProvider(window.ethereum, "any");
+      const accs = await provider.send("eth_accounts", []);
       if (accs && accs.length) {
-        _provider = eth;
-        _signer   = await _provider.getSigner();
-        _account  = await _signer.getAddress();
         connected = true;
+        account = accs[0];
       }
     } catch {}
   }
 
   // network
   let onMonad = false;
-  try {
-    if (_provider) {
-      const net = await _provider.getNetwork();
+  if (connected) {
+    try {
+      const provider = new ethers.BrowserProvider(window.ethereum, "any");
+      const net = await provider.getNetwork();
       onMonad = Number(net.chainId) === 10143;
-    }
-  } catch {}
+    } catch {}
+  }
 
   // passport
-  const passOk = connected ? await hasPassport(_account) : false;
+  const passOk = connected && account ? await hasPassport(account) : false;
   setPassportStatus(passOk);
 
   // buttons
   if (connectBtn) connectBtn.disabled = connected;
   if (addNetBtn)  addNetBtn.disabled  = !connected || onMonad;
   if (mintBtn) {
-    mintBtn.disabled   = passOk;
+    mintBtn.disabled    = passOk;
     mintBtn.textContent = passOk ? "Passport Minted" : "Mint Passport";
   }
 
-  // explorer
-  showLinkEventually("viewAddr", connected ? (EXPLORER_ADDR_PREFIX + _account) : "", 1);
+  // explorer link
+  showLinkEventually("viewAddr", connected ? (`https://testnet.monadexplorer.com/address/${account}`) : "", 1);
 }
 
-// share + modal
 function shareCast() {
-  const bestHash = (window.best && window.best.hash) || "—";
+  // read best hash from DOM (keeps modules decoupled)
+  const bestHash = ($$("bestHash")?.textContent || "—");
   const text = encodeURIComponent(`Mining MonoMine on Monad testnet. Best hash: ${bestHash} • Try it:`);
   window.open(`https://warpcast.com/~/compose?text=${text}`, "_blank");
 }
+
 function openTmfModal() {
-  const m = $$("#tmfModal"); if (!m) return;
+  const m = $$("tmfModal"); if (!m) return;
   m.hidden = false;
   m.querySelector(".modal__card")?.focus();
   const onEsc = (e) => { if (e.key === "Escape") closeTmfModal(); };
@@ -259,10 +246,7 @@ function openTmfModal() {
   m._escHandler = onEsc;
 }
 function closeTmfModal() {
-  const m = $$("#tmfModal"); if (!m) return;
+  const m = $$("tmfModal"); if (!m) return;
   m.hidden = true;
   if (m._escHandler) { document.removeEventListener("keydown", m._escHandler); delete m._escHandler; }
 }
-
-// expose if needed elsewhere
-export { connect, connectSilent, addMonadNetwork, rollIfNeeded };
