@@ -196,7 +196,7 @@ async function preflightSubmit(nonceHex) {
   }
 }
 
-async function submitBest() {
+export async function submitBest() {
   if (!signer) await connect();
   const txMsg = $$("#txMsg");
   if (!best.nonce) { txMsg && (txMsg.textContent = "Mine first to get a nonce."); return; }
@@ -340,3 +340,4 @@ function fmtSince(ts) {
   const m = Math.floor(s / 60), r = s % 60;
   return `${m}m ${r}s`;
 }
+
