@@ -1,21 +1,17 @@
-// ====== CONFIG======
-const MONAD_RPC = "https://testnet-rpc.monad.xyz"; 
-const MONOMINE_ADDRESS = "0x49c52AEb95BEA2E22bede837B77C4e482840751e"; // THE GAME 
-const FORWARDER_ADDRESS = "0xb25D7eAba78995880E7d64C4003ab23640246968"; // THE Monad Fantastic forwarder 
-const RELAY_ENDPOINT = "https://stakepoolelite.duckdns.org/api/forward";
-
-const PASSPORT_MINT_URL = "https://warpcast.com/~/compose?text=Mint%20your%20TMF%20Passport%20to%20play%20MonoMine&embeds[]=https%3A%2F%2Fstakepoolelite.duckdns.org%2Fframe";
-
-const EXPLORER_ADDR_PREFIX = "https://testnet.monadexplorer.com/address/"; 
-const EXPLORER_TX_PREFIX = "https://testnet.monadexplorer.com/tx/";
+// ====== CONFIG (Open Mode) ======
+const MONAD_RPC = "https://testnet-rpc.monad.xyz";
+const MONOMINE_ADDRESS = "0x49c52AEb95BEA2E22bede837B77C4e482840751e";
+const RELAY_ENDPOINT = "https://losarchos.com/api/forward";
+const PASSPORT_MINT_URL =
+  "https://warpcast.com/~/compose?text=Mint%20your%20TMF%20Passport%20to%20play%20MonoMine&embeds[]=https%3A%2F%2Flosarchos.com%2Fframe";
+const EXPLORER_ADDR_PREFIX = "https://testnet.monadexplorer.com/address/";
+const EXPLORER_TX_PREFIX   = "https://testnet.monadexplorer.com/tx/";
 
 // ====== Load ABI from Foundry JSON ======
 async function loadAbi() {
-  const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
-  return j.abi || j; 
+  const j = await fetch("./contracts/MonoMine.json").then((r) => r.json());
+  return j.abi || j;
 }
-
-
 
 // ====== DOM helpers ======
 const $$ = (id) => document.getElementById(id);
@@ -31,14 +27,13 @@ let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
 let hashes = 0;
 let lastTick = Date.now();
 
-
-
 async function init() {
+  console.log("MonoMine app.js v9 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
 
-  // Null-safe bindings
+  // Bind UI
   on("connectBtn", connect);
   on("mineBtn", toggleMine);
   on("submitBtn", submitBest);
@@ -46,14 +41,24 @@ async function init() {
   on("rollBtn", rollIfNeeded);
   on("mintBtn", () => window.open(PASSPORT_MINT_URL, "_blank"));
   on("mintBtn2", () => window.open(PASSPORT_MINT_URL, "_blank"));
-  const infoLink = $$("#whatIsPassport");
-  if (infoLink) infoLink.href = PASSPORT_MINT_URL;
+  const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
+  const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
 
-  const viewAddr = $$("#viewAddr");
-  if (viewAddr) viewAddr.style.display = "none";
+  // Relay health ping (nice to have)
+  try {
+    const healthUrl = RELAY_ENDPOINT.replace("/api/forward", "/health");
+    const ping = await fetch(healthUrl, { mode: "cors" });
+    const ok = ping.ok && (await ping.text()).trim().toUpperCase().includes("OK");
+    const st = $$("#status");
+    if (st) st.textContent = `${st.textContent || "Status"} • Relay ${ok ? "online" : "offline"}`;
+  } catch {
+    const st = $$("#status");
+    if (st) st.textContent = `${st.textContent || "Status"} • Relay offline`;
+  }
 
   await refreshState();
   setInterval(updateRate, 1000);
+  setInterval(refreshState, 20000);
 }
 
 async function connect() {
@@ -85,8 +90,6 @@ async function connect() {
   }
 }
 
-
-
 function short(addr) {
   return addr ? addr.slice(0, 6) + "…" + addr.slice(-4) : "—";
 }
@@ -98,11 +101,8 @@ async function refreshState() {
     const bestS = await contract.bestOfDay(day);
     seedHex = seed;
 
-    const dayEl = $$("#day");
-    if (dayEl) dayEl.textContent = day.toString();
-
-    const seedEl = $$("#seed");
-    if (seedEl) seedEl.textContent = seedHex;
+    const dayEl = $$("#day");   if (dayEl) dayEl.textContent = day.toString();
+    const seedEl = $$("#seed"); if (seedEl) seedEl.textContent = seedHex;
 
     const leaderEl = $$("#leader");
     if (leaderEl) {
@@ -132,7 +132,7 @@ async function rollIfNeeded() {
 
 function randNonce() {
   const b = crypto.getRandomValues(new Uint8Array(32));
-  return "0x" + [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+  return "0x" + [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
 async function toggleMine() {
@@ -141,7 +141,8 @@ async function toggleMine() {
     if (!seedHex) return;
   }
   mining = !mining;
-  $$("#mineBtn").textContent = mining ? "Stop Mining" : "Start Mining";
+  const mineBtn = $$("#mineBtn");
+  if (mineBtn) mineBtn.textContent = mining ? "Stop Mining" : "Start Mining";
   if (mining) mineLoop();
 }
 
@@ -154,18 +155,17 @@ async function mineLoop() {
     hashes++;
     if (hv < best.value) {
       best = { hash: h, nonce, value: hv };
-      $$("#bestHash").textContent = best.hash;
-      $$("#bestNonce").textContent = best.nonce;
+      const bh = $$("#bestHash");  if (bh)  bh.textContent  = best.hash;
+      const bn = $$("#bestNonce"); if (bn)  bn.textContent  = best.nonce;
     }
-    // Yield to UI
-    await new Promise(r => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0)); // yield to UI
   }
 }
 
 function updateRate() {
   const rateEl = $$("#rate");
   if (!rateEl) return;
-  if (typeof lastTick !== "number") lastTick = Date.now();  // safety init
+  if (typeof lastTick !== "number") lastTick = Date.now();
   const now = Date.now();
   const dt = (now - lastTick) / 1000;
   if (dt >= 0.95) {
@@ -177,7 +177,7 @@ function updateRate() {
 }
 
 const useRelayEl = $$("#useRelay");
-const useRelay = () => useRelayEl ? useRelayEl.checked : true; // default on
+const useRelay = () => (useRelayEl ? useRelayEl.checked : true); // default on
 
 async function submitBest() {
   if (!signer) await connect();
@@ -185,69 +185,55 @@ async function submitBest() {
     $$("#txMsg").textContent = "Mine first to get a nonce.";
     return;
   }
-  $$("#txMsg").textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
+
+  const txMsg = $$("#txMsg");
+  if (txMsg) txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
 
   try {
     if (useRelay()) {
-      // Gasless path via TMF relayer
+      // Open Mode: POST {target,data,gas_limit} → {tx_hash}
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const res = await submitViaRelay(data);
-      $$("#txMsg").textContent = `Relay accepted: ${JSON.stringify(res).slice(0, 120)}…`;
+      if (res && res.txHash) {
+        txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${res.txHash}" target="_blank" class="link">${short(res.txHash)}</a>`;
+      } else {
+        txMsg.textContent = `Relay accepted: ${JSON.stringify(res).slice(0, 120)}…`;
+      }
     } else {
       // Direct on-chain tx
       const tx = await writeContract.submit(best.nonce);
-      $$("#txMsg").textContent = `Submitting… ${tx.hash}`;
+      txMsg.textContent = `Submitting… ${tx.hash}`;
       await tx.wait();
-      $$("#txMsg").innerHTML = `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+      txMsg.innerHTML = `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
     }
     await refreshState();
   } catch (e) {
     console.error(e);
-    $$("#txMsg").textContent = ` ${e.shortMessage || e.message}`;
+    txMsg.textContent = ` ${friendlyError(e)}`;
   }
 }
 
-// EIP-2771 style ForwardRequest 
+// TMF Gas Station (Open Mode): simple forwarder
 async function submitViaRelay(calldata) {
-  const network = await signer.provider.getNetwork();
-  const chainId = Number(network.chainId);
-
-  const req = {
-    from: account,
-    to: MONOMINE_ADDRESS,
-    value: 0,
-    gas: 200_000,
-    nonce: 0,        
-    data: calldata
-  };
-
-  const domain = {
-    name: "TMF EntryForwarder",
-    version: "1",
-    chainId,
-    verifyingContract: FORWARDER_ADDRESS
-  };
-
-  const types = {
-    ForwardRequest: [
-      { name: "from", type: "address" },
-      { name: "to", type: "address" },
-      { name: "value", type: "uint256" },
-      { name: "gas", type: "uint256" },
-      { name: "nonce", type: "uint256" },
-      { name: "data", type: "bytes" }
-    ]
-  };
-
-  const signature = await signer.signTypedData(domain, types, req);
-
+  const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
   const res = await fetch(RELAY_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ request: req, signature })
+    headers: { "Content-Type": "application/json" }, // no X-TMF-Key in Open Mode
+    body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`Relay HTTP ${res.status}`);
-  return await res.json();
+  const text = await res.text();
+  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
+  let json; try { json = JSON.parse(text); } catch { json = {}; }
+  const txHash = json.tx_hash || json.hash || json.txHash;
+  return txHash ? { txHash } : json;
+}
+
+function friendlyError(e) {
+  const m = (e?.message || "").toLowerCase();
+  if (m.includes("gas_limit too high")) return "Relay cap hit: try again or submit directly.";
+  if (m.includes("quota")) return "Out of free relay quota today.";
+  if (m.includes("passport")) return "You need a TMF Passport to submit.";
+  return e?.shortMessage || e?.message || String(e);
 }
 
 function shareCast() {

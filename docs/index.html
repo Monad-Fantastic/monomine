@@ -3,20 +3,21 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <!-- Strict CSP; no unsafe-eval needed -->
   <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self' https:;
-               script-src 'self' https://esm.sh 'unsafe-inline';
-               connect-src *;
-               style-src 'self' 'unsafe-inline';
-               img-src 'self' data: https:;
-               object-src 'none';">
+        content="default-src 'self' https:;
+                 script-src 'self' https://esm.sh 'unsafe-inline';
+                 connect-src *;
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' data: https:;
+                 object-src 'none';">
   <title>MonoMine — Monad Game Jam</title>
   <link rel="stylesheet" href="style.css"/>
 </head>
 <body>
   <header class="wrap">
     <h1>MonoMine <span class="pill">Monad Testnet</span></h1>
-    <p class="sub">Daily micro-PoW. TMF Passport required. Gasless supported via TMF EntryForwarder.</p>
+    <p class="sub">Daily micro-PoW. TMF Passport required. Gasless supported via TMF Gas Station (Open Mode).</p>
   </header>
 
   <main class="wrap">
@@ -34,19 +35,18 @@
       <div class="card callout">
         <h3>No wallet? No problem.</h3>
         <p class="muted">
-            You can play <b>gasless</b> using your Farcaster ID with <b>Monad Fantastic (TMF) Passport</b>.
+          You can play <b>gasless</b> using your Farcaster ID with <b>Monad Fantastic (TMF) Passport</b>.
         </p>
         <ol class="muted small">
-            <li>Click <b>Mint Passport</b> — TMF will create/mint for you (no tokens needed).</li>
-            <li>Return here and click <b>Connect</b> (your new Passport-linked wallet will work).</li>
-            <li>Hit <b>Start Mining</b> → <b>Submit Best</b> (keep <b>Gasless via TMF</b> checked).</li>
+          <li>Click <b>Mint Passport</b> — TMF will create/mint for you (no tokens needed).</li>
+          <li>Return here and click <b>Connect</b> (your new Passport-linked wallet will work).</li>
+          <li>Hit <b>Start Mining</b> → <b>Submit Best</b> (keep <b>Gasless via TMF</b> checked).</li>
         </ol>
         <div class="row">
-            <button id="mintBtn2">Mint Passport</button>
-            <a class="link" target="_blank" id="whatIsPassport">What is TMF Passport?</a>
+          <button id="mintBtn2">Mint Passport</button>
+          <a class="link" target="_blank" id="whatIsPassport">What is TMF Passport?</a>
         </div>
-        </div>
-
+      </div>
 
       <div class="card">
         <h3>Today</h3>
@@ -61,8 +61,6 @@
           <div id="leader">—</div>
         </div>
       </div>
-
-      
 
       <div class="card wide">
         <h3>Mine</h3>
@@ -83,16 +81,17 @@
     </section>
 
     <footer class="muted small">
-      Open source • MIT • Built for Monad Game Jam • Requires TMF Passport • Uses EIP-2771 for gasless
+      Contract:
+      <a class="link" target="_blank" href="https://testnet.monadexplorer.com/address/0x49c52AEb95BEA2E22bede837B77C4e482840751e">MonoMine</a>
+      • MIT • TMF Gas Station (Open Mode)
     </footer>
   </main>
 
-<script type="module">
-  // Load a pure ESM build of ethers (no eval)
-  import * as ethersMod from "https://esm.sh/ethers@6.13.2";
-  window.ethers = ethersMod;
-
-  import "./app.js?v=7";
-</script>
+  <!-- Load ethers as a pure ESM build to avoid unsafe-eval -->
+  <script type="module">
+    import * as ethersMod from "https://esm.sh/ethers@6.13.2";
+    window.ethers = ethersMod; // expose for app.js
+    import "./app.js?v=9";
+  </script>
 </body>
 </html>
