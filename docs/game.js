@@ -87,37 +87,51 @@ export async function toggleMine() {
   if (mining) void mineLoop();
 }
 
-export async function mineLoop() {
-  // normalize to bytes; prevents BytesLike errors
+async function mineLoop() {
+  const BATCH = 2048;
+  const fidHex = ethers.toBeHex(0, 32);     // 32-byte FID = 0
+
+  // normalize bytes once, refresh if seed changes
   let localSeed = seedHex;
   let seedBytes = ethers.getBytes(localSeed);
-  const fidBytes = ethers.getBytes(ethers.toBeHex(0, 32)); // FID=0
+  const fidBytes = ethers.getBytes(fidHex);
 
   try {
-    const CHUNK = 2048;
     while (mining) {
-      for (let i = 0; i < CHUNK && mining; i++) {
-        const nonceHex   = randNonce();
-        const nonceBytes = ethers.getBytes(nonceHex);
+      for (let i = 0; i < BATCH && mining; i++) {
+        const nonce = nextNonceHex(); // or randNonce() if you prefer random
+        const nonceBytes = ethers.getBytes(nonce);
 
         const h  = ethers.keccak256(ethers.concat([seedBytes, fidBytes, nonceBytes]));
         const hv = BigInt(h);
         hashes++;
+
         if (hv < best.value) {
-          best = { hash: h, nonce: nonceHex, value: hv };
+          const score = leadingZeroBits(h);
+          best = { hash: h, nonce, value: hv, score };
+          improves += 1;
+          lastImproveTs = Date.now();
+
           setTextEventually("bestHash",  best.hash);
           setTextEventually("bestNonce", best.nonce);
+          setTextEventually("bestScore", `difficulty: ${score} bits`);
+          setTextEventually("bestCount", `improvements: ${improves}`);
+          setTextEventually("bestAgo",   `last improve: just now`);
         }
       }
+
+      // yield to UI
       await new Promise(r => setTimeout(r, 0));
 
-      // seed changed? rebind bytes
+      // If seed rolled on-chain, rebind bytes
       if (seedHex !== localSeed) {
-        localSeed = seedHex;
-        if (!localSeed) { await refreshState(); localSeed = seedHex; }
+        localSeed = seedHex || (await (async () => { await refreshState(); return seedHex; })());
         if (!localSeed) break;
         seedBytes = ethers.getBytes(localSeed);
       }
+
+      // keep the “time since last improvement” fresh
+      setTextEventually("bestAgo", `last improve: ${fmtSince(lastImproveTs)}`);
     }
   } catch (e) {
     console.error("Mining loop error:", e);
@@ -125,6 +139,7 @@ export async function mineLoop() {
     setTextEventually("mineBtn", "Start Mining");
   }
 }
+
 
 export function updateRate() {
   const el = $$("rate");
@@ -254,4 +269,33 @@ export async function wireWriterWith(s) {
   account = s.account;
   const abi = await loadAbi();
   writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
+}
+
+// Extra mining telemetry
+let improves = 0;
+let lastImproveTs = null;
+
+// Count leading zero bits of a 0x…32-byte hex
+function leadingZeroBits(hex32) {
+  // assume 0x-prefixed 64-hex chars
+  const s = hex32.slice(2);
+  let bits = 0;
+  for (let i = 0; i < s.length; i++) {
+    const nib = parseInt(s[i], 16);
+    if (nib === 0) { bits += 4; continue; }
+    // first non-zero nibble -> + (3 - log2(nib) floor)
+    if (nib & 0x8) return bits + 0;
+    if (nib & 0x4) return bits + 1;
+    if (nib & 0x2) return bits + 2;
+    return bits + 3;
+  }
+  return 256;
+}
+
+function fmtSince(ts) {
+  if (!ts) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}m ${r}s`;
 }
