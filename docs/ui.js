@@ -17,6 +17,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 
 async function initUI() {
   console.log("MonoMine ui.js loaded");
+    console.log("MonoMine v11.8 loaded");
   await initGame();
 
   on("connectBtn", connect);
