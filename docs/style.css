@@ -63,3 +63,8 @@ footer { margin-top: 24px; text-align: center; opacity: .8; }
 }
 .card.callout h3 { margin-top: 4px; }
 .card.callout ol { margin: 8px 0 0 18px; }
+
+
+.badge { display:inline-block; padding:2px 8px; border:1px solid var(--border); border-radius:999px; }
+.badge.ok { color:#6edc82; border-color:#2a5a35; background:#102315; }
+.badge.no { color:#ffb86b; border-color:#5a3b2a; background:#231810; }

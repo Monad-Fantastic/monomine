@@ -17,46 +17,24 @@ async function loadAbi() {
 const $$ = (id) => document.getElementById(id);
 const on = (id, handler) => { const el = $$(id); if (el) el.onclick = handler; };
 
-
 function setTextEventually(id, text, tries = 20) {
   const el = document.getElementById(id);
-  if (el) {
-    el.textContent = text;
-    return true;
-  }
-  if (tries > 0) {
-    requestAnimationFrame(() => setTextEventually(id, text, tries - 1));
-  }
+  if (el) { el.textContent = text; return true; }
+  if (tries > 0) requestAnimationFrame(() => setTextEventually(id, text, tries - 1));
   return false;
 }
-
 function enableEventually(id, enabled = true, tries = 20) {
   const el = document.getElementById(id);
-  if (el) {
-    el.disabled = !enabled;
-    return true;
-  }
-  if (tries > 0) {
-    requestAnimationFrame(() => enableEventually(id, enabled, tries - 1));
-  }
+  if (el) { el.disabled = !enabled; return true; }
+  if (tries > 0) requestAnimationFrame(() => enableEventually(id, enabled, tries - 1));
   return false;
 }
-
 function showLinkEventually(id, href, tries = 20) {
   const el = document.getElementById(id);
-  if (el) {
-    if (href) el.href = href;
-    el.style.display = "inline-block";
-    return true;
-  }
-  if (tries > 0) {
-    requestAnimationFrame(() => showLinkEventually(id, href, tries - 1));
-  }
+  if (el) { if (href) el.href = href; el.style.display = "inline-block"; return true; }
+  if (tries > 0) requestAnimationFrame(() => showLinkEventually(id, href, tries - 1));
   return false;
 }
-
-
-
 
 document.addEventListener("DOMContentLoaded", init);
 
@@ -69,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v9 loaded");
+  console.log("MonoMine app.js v10 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -85,7 +63,7 @@ async function init() {
   const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
   const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
 
-  // Relay health ping (nice to have)
+  // Relay health ping
   try {
     const healthUrl = RELAY_ENDPOINT.replace("/api/forward", "/health");
     const ping = await fetch(healthUrl, { mode: "cors" });
@@ -101,7 +79,6 @@ async function init() {
   setInterval(updateRate, 1000);
   setInterval(refreshState, 20000);
 }
-
 
 async function connect() {
   try {
@@ -121,17 +98,21 @@ async function connect() {
 
     signer  = await provider.getSigner();
     account = await signer.getAddress();
-
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
-    const text = `Connected: ${short(account)}`;
-    setTextEventually("status", text);
+    setTextEventually("status", `Connected: ${short(account)}`);
     enableEventually("mineBtn",   true);
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
 
-    // Optional: keep UI in sync on account/chain changes
+    // Passport check
+    try {
+      const ok = await hasPassport(account);
+      setPassportStatus(ok);
+    } catch {}
+
+    // Sync on account/chain changes
     if (window.ethereum) {
       window.ethereum.removeAllListeners?.('accountsChanged');
       window.ethereum.on?.('accountsChanged', () => connect());
@@ -143,14 +124,11 @@ async function connect() {
     console.log("DEBUG: provider", provider);
     console.log("DEBUG: signer", signer);
     console.log("DEBUG: account", account);
-    console.log("DEBUG: statusEl exists?", !!document.getElementById('status'));
   } catch (e) {
     console.error("Connect error:", e);
     setTextEventually("status", `Connect failed: ${e.shortMessage || e.message}`);
   }
 }
-
-
 
 function short(addr) {
   return addr ? addr.slice(0, 6) + "…" + addr.slice(-4) : "—";
@@ -162,10 +140,8 @@ async function refreshState() {
     const seed = await contract.seed();
     const bestS = await contract.bestOfDay(day);
     seedHex = seed;
-
-    const dayEl = $$("#day");   if (dayEl) dayEl.textContent = day.toString();
-    const seedEl = $$("#seed"); if (seedEl) seedEl.textContent = seedHex;
-
+    setTextEventually("day", day.toString());
+    setTextEventually("seed", seedHex);
     const leaderEl = $$("#leader");
     if (leaderEl) {
       const leaderStr =
@@ -174,21 +150,19 @@ async function refreshState() {
           : `<a class="link" target="_blank" href="${EXPLORER_ADDR_PREFIX}${bestS.player}">${short(bestS.player)}</a> (FID ${bestS.fid}) @ ${bestS.bestHash}`;
       leaderEl.innerHTML = leaderStr;
     }
-  } catch (e) {
-    console.error(e);
-  }
+  } catch (e) { console.error(e); }
 }
 
 async function rollIfNeeded() {
   try {
     if (!signer) await connect();
-    $$("#rollMsg").textContent = "Rolling if needed…";
+    setTextEventually("rollMsg", "Rolling if needed…");
     const tx = await writeContract.rollIfNeeded();
     await tx.wait();
-    $$("#rollMsg").textContent = " Done";
+    setTextEventually("rollMsg", " Done");
     await refreshState();
   } catch (e) {
-    $$("#rollMsg").textContent = `${e.shortMessage || e.message}`;
+    setTextEventually("rollMsg", e.shortMessage || e.message);
   }
 }
 
@@ -198,93 +172,82 @@ function randNonce() {
 }
 
 async function toggleMine() {
-  if (!seedHex) {
-    await refreshState();
-    if (!seedHex) return;
-  }
+  if (!seedHex) { await refreshState(); if (!seedHex) return; }
   mining = !mining;
-  const mineBtn = $$("#mineBtn");
-  if (mineBtn) mineBtn.textContent = mining ? "Stop Mining" : "Start Mining";
+  setTextEventually("mineBtn", mining ? "Stop Mining" : "Start Mining");
   if (mining) mineLoop();
 }
-
 async function mineLoop() {
   while (mining) {
-    // We don't know FID here; using 0 keeps comparison monotonic.
     const nonce = randNonce();
     const h = ethers.keccak256(ethers.concat([seedHex, ethers.zeroPadValue(0, 32), nonce]));
     const hv = BigInt(h);
     hashes++;
     if (hv < best.value) {
       best = { hash: h, nonce, value: hv };
-      const bh = $$("#bestHash");  if (bh)  bh.textContent  = best.hash;
-      const bn = $$("#bestNonce"); if (bn)  bn.textContent  = best.nonce;
+      setTextEventually("bestHash", best.hash);
+      setTextEventually("bestNonce", best.nonce);
     }
-    await new Promise((r) => setTimeout(r, 0)); // yield to UI
+    await new Promise((r) => setTimeout(r, 0));
   }
 }
-
 function updateRate() {
-  const rateEl = $$("#rate");
-  if (!rateEl) return;
+  const rateEl = $$("#rate"); if (!rateEl) return;
   if (typeof lastTick !== "number") lastTick = Date.now();
-  const now = Date.now();
-  const dt = (now - lastTick) / 1000;
+  const now = Date.now(), dt = (now - lastTick) / 1000;
   if (dt >= 0.95) {
-    const rate = Math.round(hashes / dt);
-    rateEl.textContent = `hashes/s: ${rate}`;
-    hashes = 0;
-    lastTick = now;
+    rateEl.textContent = `hashes/s: ${Math.round(hashes / dt)}`;
+    hashes = 0; lastTick = now;
   }
 }
 
 const useRelayEl = $$("#useRelay");
-const useRelay = () => (useRelayEl ? useRelayEl.checked : true); // default on
+const useRelay = () => (useRelayEl ? useRelayEl.checked : true);
 
 async function submitBest() {
   if (!signer) await connect();
-  if (!best.nonce) {
-    $$("#txMsg").textContent = "Mine first to get a nonce.";
+  if (!best.nonce) { setTextEventually("txMsg", "Mine first to get a nonce."); return; }
+
+  // Check passport first
+  const ok = await hasPassport(account);
+  if (!ok) {
+    setTextEventually("txMsg", "No Passport found — please Mint first.");
     return;
   }
 
-  const txMsg = $$("#txMsg");
-  if (txMsg) txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
-
+  setTextEventually("txMsg", useRelay() ? "Relaying (gasless)..." : "Submitting tx…");
   try {
     if (useRelay()) {
-      // Open Mode: POST {target,data,gas_limit} → {tx_hash}
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const res = await submitViaRelay(data);
       if (res && res.txHash) {
-        txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${res.txHash}" target="_blank" class="link">${short(res.txHash)}</a>`;
+        setTextEventually("txMsg", `Relay accepted: ${short(res.txHash)}`);
       } else {
-        txMsg.textContent = `Relay accepted: ${JSON.stringify(res).slice(0, 120)}…`;
+        setTextEventually("txMsg", `Relay accepted: ${JSON.stringify(res).slice(0, 120)}…`);
       }
     } else {
-      // Direct on-chain tx
       const tx = await writeContract.submit(best.nonce);
-      txMsg.textContent = `Submitting… ${tx.hash}`;
+      setTextEventually("txMsg", `Submitting… ${tx.hash}`);
       await tx.wait();
-      txMsg.innerHTML = `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+      setTextEventually("txMsg", `Submitted: ${short(tx.hash)}`);
     }
     await refreshState();
   } catch (e) {
     console.error(e);
-    txMsg.textContent = ` ${friendlyError(e)}`;
+    setTextEventually("txMsg", friendlyError(e));
   }
 }
 
-// TMF Gas Station (Open Mode): simple forwarder
+// Relay forwarder (Open Mode)
 async function submitViaRelay(calldata) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
   const res = await fetch(RELAY_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" }, // no X-TMF-Key in Open Mode
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await res.text();
-  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
+  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0,200)}`);
   let json; try { json = JSON.parse(text); } catch { json = {}; }
   const txHash = json.tx_hash || json.hash || json.txHash;
   return txHash ? { txHash } : json;
@@ -299,9 +262,25 @@ function friendlyError(e) {
 }
 
 function shareCast() {
-  const text = encodeURIComponent(
-    `Mining MonoMine on Monad testnet. Best hash: ${best.hash || "—"} • Try it:`
-  );
-  const url = `https://warpcast.com/~/compose?text=${text}`;
-  window.open(url, "_blank");
+  const text = encodeURIComponent(`Mining MonoMine on Monad testnet. Best hash: ${best.hash || "—"} • Try it:`);
+  window.open(`https://warpcast.com/~/compose?text=${text}`, "_blank");
+}
+
+// ===== Passport helpers =====
+async function hasPassport(addr) {
+  try {
+    const passAddr = await contract.passport();
+    if (!passAddr || passAddr === ethers.ZeroAddress) return false;
+    const erc721Abi = ["function balanceOf(address) view returns (uint256)"];
+    const pass = new ethers.Contract(passAddr, erc721Abi, readProvider);
+    const bal = await pass.balanceOf(addr);
+    return (bal && BigInt(bal) > 0n);
+  } catch (e) { console.warn("Passport check failed:", e); return false; }
+}
+function setPassportStatus(ok) {
+  const el = document.getElementById("passportStatus");
+  if (!el) return;
+  el.innerHTML = ok
+    ? `Passport: <span class="badge ok">Found</span>`
+    : `Passport: <span class="badge no">Not found</span>`;
 }
