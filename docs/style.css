@@ -69,3 +69,24 @@ footer { margin-top: 24px; text-align: center; opacity: .8; }
 .badge.ok { background:#163d2e; color:#4ff0b0; }
 .badge.no { background:#3d1622; color:#ff6a7a; }
 .wallet-help { margin-top:10px; }
+
+.smallbtn { padding: 6px 10px; font-size: 12px; border-radius: 8px; }
+
+.modal[hidden] { display: none; }
+.modal {
+  position: fixed; inset: 0; z-index: 1000;
+}
+.modal__scrim {
+  position: absolute; inset: 0; background: rgba(0,0,0,.55);
+  backdrop-filter: blur(2px);
+}
+.modal__card {
+  position: relative; margin: 8vh auto 0; width: min(560px, 92vw);
+  background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  padding: 14px 14px 12px;
+  outline: none;
+}
+.modal__head { display:flex; align-items:center; justify-content:space-between; }
+.modal__body { padding: 6px 4px 10px; }
+.modal__foot { display:flex; gap:10px; align-items:center; justify-content:flex-end; border-top:1px dashed var(--border); padding-top:10px; }

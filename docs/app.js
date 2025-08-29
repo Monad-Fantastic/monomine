@@ -47,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v11.2 loaded");
+  console.log("MonoMine app.js v11.3 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -63,6 +63,14 @@ async function init() {
   on("addNetworkBtn", addMonadNetwork);
   const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
   const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
+  on("whatIsTmfBtn", openTmf);
+  on("tmfClose", closeTmf);
+  on("tmfOk", closeTmf);
+  on("tmfMint", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  const tmfBackdrop = document.querySelector("#tmfModal .modal-backdrop");
+  if (tmfBackdrop) tmfBackdrop.addEventListener("click", closeTmf);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTmf(); });
+
 
     if (window.ethereum) {
     window.ethereum.removeAllListeners?.("accountsChanged");
@@ -423,4 +431,14 @@ async function updateUIState() {
 
   // “View on Explorer” link visibility
   showLinkEventually("viewAddr", connected ? (EXPLORER_ADDR_PREFIX + account) : "", 1);
+}
+
+
+function openTmf() {
+  const m = $$("#tmfModal");
+  if (m) { m.classList.add("open"); m.setAttribute("aria-hidden", "false"); }
+}
+function closeTmf() {
+  const m = $$("#tmfModal");
+  if (m) { m.classList.remove("open"); m.setAttribute("aria-hidden", "true"); }
 }
