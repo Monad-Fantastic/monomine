@@ -17,9 +17,7 @@
 <body>
   <header class="wrap">
     <h1>MonoMine <span class="pill">Monad Testnet</span>
-    <button id="tmfInfoBtn" class="ghost smallbtn" aria-haspopup="dialog" aria-controls="tmfModal">
-      What is TMF?
-    </button>
+<button id="tmfInfoBtn" class="ghost small">What is TMF?</button>
     </h1>
     <p class="sub">Daily micro-PoW. TMF Passport required. Gasless supported via TMF Gas Station (Open Mode).</p>
   </header>
@@ -88,6 +86,12 @@
 
       <div class="card wide">
         <h3>Mine</h3>
+<p class="muted small" id="howTo">
+  Tip: click <b>Start Mining</b> and watch “Best hash”. More leading zeros = better.
+  Click <b>Stop</b> and <b>Submit Best</b> when you’re happy. Gasless relay works by default.
+</p>
+<br>
+
         <div class="row">
           <button id="mineBtn" disabled>Start Mining</button>
           <button id="submitBtn" disabled>Submit Best</button>
@@ -105,30 +109,25 @@
     </section>
 
 
-<div id="tmfModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="tmfTitle" hidden>
-  <div class="modal__scrim" data-close="1"></div>
-  <div class="modal__card" role="document" tabindex="-1">
-    <div class="modal__head">
-      <h3 id="tmfTitle">Monad Fantastic (TMF)</h3>
-      <button id="tmfClose" class="ghost smallbtn" aria-label="Close">✕</button>
+<div id="tmfModal" class="modal" hidden data-close="1" aria-hidden="true">
+  <div class="modal__card" role="dialog" aria-modal="true" aria-labelledby="tmfTitle" tabindex="-1">
+    <div class="modal__header">
+      <h3 id="tmfTitle">What is TMF Passport?</h3>
+      <button id="tmfClose" class="ghost" aria-label="Close">✕</button>
     </div>
-
-    <div class="modal__body">
-      <p><b>TMF Passport</b> links your Farcaster ID to a Monad wallet—so you can play gasless without juggling seed phrases.</p>
-      <ul>
-        <li><b>Passport mint:</b> 1-click via a Farcaster Frame (no tokens needed).</li>
-        <li><b>Gasless transactions:</b> routed through TMF’s EntryForwarder (Open Mode) with sane caps.</li>
-        <li><b>Use any wallet:</b> MetaMask works too—Passport just makes it seamless.</li>
-      </ul>
-      <p class="small muted">
-        Open Mode: no tenant keys required; rate-limited & gas-capped by the relay.
-      </p>
-    </div>
-
-    <div class="modal__foot">
-      <a class="link" target="_blank" href="https://losarchos.com/frame">Open Passport Mint Frame</a>
-      <span>•</span>
-      <a class="link" target="_blank" href="https://docs.monad.xyz/guides/add-monad-to-wallet/metamask">Add Monad to MetaMask</a>
+    <p class="muted">
+      TMF Passport links your Farcaster ID to a gasless wallet on Monad. With it, you can
+      play MonoMine and other TMF-enabled apps without holding gas. Don’t have Farcaster?
+      You can still play with a normal wallet—Passport is optional.
+    </p>
+    <ol class="muted small">
+      <li>Mint your Passport (one-time, free in Open Mode).</li>
+      <li>Return here, Connect, and Start Mining.</li>
+      <li>Submit Best (gasless relay is on by default).</li>
+    </ol>
+    <div class="row">
+      <a class="link" target="_blank" href="https://warpcast.com/~/compose?text=Mint%20your%20TMF%20Passport%20to%20play%20MonoMine&embeds[]=https%3A%2F%2Flosarchos.com%2Fframe">Mint Passport</a>
+      <a id="whatIsPassport" class="link" target="_blank">Learn more</a>
     </div>
   </div>
 </div>

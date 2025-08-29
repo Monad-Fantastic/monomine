@@ -90,3 +90,12 @@ footer { margin-top: 24px; text-align: center; opacity: .8; }
 .modal__head { display:flex; align-items:center; justify-content:space-between; }
 .modal__body { padding: 6px 4px 10px; }
 .modal__foot { display:flex; gap:10px; align-items:center; justify-content:flex-end; border-top:1px dashed var(--border); padding-top:10px; }
+
+/* Modal */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.45);
+         display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modal[hidden] { display: none; }
+.modal__card { background: var(--card); border: 1px solid var(--border);
+               border-radius: 14px; padding: 16px; width: min(720px, 94vw); outline: none; }
+.modal__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+button.small { padding: 6px 10px; font-size: 12px; }

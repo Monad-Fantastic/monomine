@@ -47,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v11.4 loaded");
+  console.log("MonoMine app.js v11.5 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -111,10 +111,11 @@ async function init() {
   }
 
   await refreshState();
-  await updateUIState();
   setInterval(updateRate, 1000);
   setInterval(refreshState, 20000);
-  setInterval(updateUIState, 15000); 
+  
+  await refreshWalletUI();
+setInterval(refreshWalletUI, 15000);
 
 }
 
@@ -167,7 +168,7 @@ async function connect() {
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
 
-    await updateUIState();
+    await refreshWalletUI();
 
   } catch (e) {
     console.error("Connect error:", e);
@@ -202,7 +203,7 @@ async function connectSilent() {
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
 
-    await updateUIState();
+    await refreshWalletUI();
 
     // Update Passport badge
     try {
@@ -213,6 +214,9 @@ async function connectSilent() {
     console.warn("connectSilent failed:", e);
   }
 }
+
+
+
 
 async function addMonadNetwork() {
   if (!window.ethereum) return;
@@ -310,51 +314,74 @@ const useRelay = () => (useRelayEl ? useRelayEl.checked : true);
 
 async function submitBest() {
   if (!signer) await connect();
-  if (!best.nonce) { setTextEventually("txMsg", "Mine first to get a nonce."); return; }
-
-  // Check passport first
-  const ok = await hasPassport(account);
-  if (!ok) {
-    setTextEventually("txMsg", "No Passport found — please Mint first.");
+  if (!best.nonce) {
+    const el = $$("#txMsg");
+    if (el) el.textContent = "Mine first to get a nonce.";
     return;
   }
 
-  setTextEventually("txMsg", useRelay() ? "Relaying (gasless)..." : "Submitting tx…");
+  const txMsg = $$("#txMsg");
+  if (txMsg) txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
+
   try {
     if (useRelay()) {
+      // Gasless via TMF Gas Station (Open Mode)
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
-      const res = await submitViaRelay(data);
-      if (res && res.txHash) {
-        setTextEventually("txMsg", `Relay accepted: ${short(res.txHash)}`);
-      } else {
-        setTextEventually("txMsg", `Relay accepted: ${JSON.stringify(res).slice(0, 120)}…`);
+      const { txHash } = await submitViaRelay(data);
+
+      if (txMsg) {
+        txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a> · waiting confirm…`;
+      }
+
+      // wait for 1 confirmation via READ provider
+      const rec = await readProvider.waitForTransaction(txHash);
+      if (txMsg) {
+        if (rec && rec.status === 1) {
+          txMsg.innerHTML = `Confirmed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`;
+        } else {
+          txMsg.innerHTML = `Tx failed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`;
+        }
       }
     } else {
+      // Direct on-chain
       const tx = await writeContract.submit(best.nonce);
-      setTextEventually("txMsg", `Submitting… ${tx.hash}`);
-      await tx.wait();
-      setTextEventually("txMsg", `Submitted: ${short(tx.hash)}`);
+      if (txMsg) txMsg.textContent = `Submitting… ${tx.hash}`;
+      const rec = await tx.wait();
+      if (txMsg) {
+        if (rec && rec.status === 1) {
+          txMsg.innerHTML = `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+        } else {
+          txMsg.innerHTML = `Tx failed: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+        }
+      }
     }
+
     await refreshState();
   } catch (e) {
     console.error(e);
-    setTextEventually("txMsg", friendlyError(e));
+    if (txMsg) txMsg.textContent = ` ${friendlyError(e)}`;
   }
 }
+
 
 // Relay forwarder (Open Mode)
 async function submitViaRelay(calldata) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
   const res = await fetch(RELAY_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" }, // Open Mode: no X-TMF-Key from browser
     body: JSON.stringify(body),
   });
+
   const text = await res.text();
-  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0,200)}`);
-  let json; try { json = JSON.parse(text); } catch { json = {}; }
+  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
+
+  let json;
+  try { json = JSON.parse(text); } catch { json = {}; }
+
   const txHash = json.tx_hash || json.hash || json.txHash;
-  return txHash ? { txHash } : json;
+  if (!txHash) throw new Error(`Relay did not return tx hash: ${text.slice(0, 200)}`);
+  return { txHash };
 }
 
 function friendlyError(e) {
@@ -389,10 +416,10 @@ function setPassportStatus(ok) {
     : `Passport: <span class="badge no">Not found</span>`;
 }
 
-async function updateUIState() {
-  const connectBtn   = $$("#connectBtn");
-  const addNetBtn    = $$("#addNetworkBtn");  
-  const mintBtn      = $$("#mintBtn");
+async function refreshWalletUI() {
+  const connectBtn = $$("#connectBtn");
+  const addNetBtn  = $$("#addNetworkBtn");
+  const mintBtn    = $$("#mintBtn");
 
   // Figure out current wallet + network status
   let connected = !!account;
@@ -400,8 +427,7 @@ async function updateUIState() {
 
   try {
     if (!connected && window.ethereum) {
-      // silent reconnect if the wallet is already authorized
-      const eth = new ethers.BrowserProvider(window.ethereum, "any");
+      const eth  = new ethers.BrowserProvider(window.ethereum, "any");
       const accs = await eth.send("eth_accounts", []);
       if (accs && accs.length) {
         provider = eth;
@@ -427,13 +453,14 @@ async function updateUIState() {
   if (connectBtn) connectBtn.disabled = connected;
   if (addNetBtn)  addNetBtn.disabled  = !connected || onMonad;
   if (mintBtn) {
-    mintBtn.disabled = passOk;
+    mintBtn.disabled   = passOk;
     mintBtn.textContent = passOk ? "Passport Minted" : "Mint Passport";
   }
 
-  // “View on Explorer” link visibility
+  // Explorer link
   showLinkEventually("viewAddr", connected ? (EXPLORER_ADDR_PREFIX + account) : "", 1);
 }
+
 
 
 function openTmfModal() {
