@@ -278,27 +278,55 @@ function randNonce() {
   return "0x" + [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
 }
 
+let nonceCounter = 1n;
+function nextNonceHex() {
+  const h = nonceCounter.toString(16).padStart(64, "0");
+  nonceCounter += 1n;
+  return "0x" + h;
+}
+function reseedNonceCounter() {
+  const b = crypto.getRandomValues(new Uint8Array(8));
+  let seed = 0n;
+  for (let i = 0; i < 8; i++) seed = (seed << 8n) | BigInt(b[i]);
+  if (seed === 0n) seed = 1n;
+  nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
+}
+
+
 async function toggleMine() {
   if (!seedHex) { await refreshState(); if (!seedHex) return; }
   mining = !mining;
   setTextEventually("mineBtn", mining ? "Stop Mining" : "Start Mining");
-  if (mining) mineLoop();
-}
-async function mineLoop() {
-  while (mining) {
-    const nonce = randNonce();
-    const fid = ethers.toBeHex(0, 32); // 0 as a 32-byte hex
-    const h = ethers.keccak256(ethers.concat([seedHex, fid, nonce]));
-    const hv = BigInt(h);
-    hashes++;
-    if (hv < best.value) {
-      best = { hash: h, nonce, value: hv };
-      setTextEventually("bestHash", best.hash);
-      setTextEventually("bestNonce", best.nonce);
-    }
-    await new Promise((r) => setTimeout(r, 0));
+  if (mining) {
+    reseedNonceCounter();   // optional one-time salt
+    mineLoop();             // fire & forget
   }
 }
+
+async function mineLoop() {
+  const BATCH = 2048;                       // tune if you want
+  const fidHex = ethers.toBeHex(0, 32);     // 32-byte FID = 0
+
+  while (mining) {
+    for (let i = 0; i < BATCH; i++) {
+      const nonce = nextNonceHex();
+      // seedHex is bytes32 0x..., fidHex and nonce are hex 0x...
+      const h  = ethers.keccak256(ethers.concat([seedHex, fidHex, nonce]));
+      const hv = BigInt(h);
+      hashes++;
+      if (hv < best.value) {
+        best = { hash: h, nonce, value: hv };
+        setTextEventually("bestHash",  best.hash);
+        setTextEventually("bestNonce", best.nonce);
+      }
+    }
+    // yield to UI
+    await new Promise(r => setTimeout(r, 0));
+  }
+}
+
+
+
 function updateRate() {
   const rateEl = $$("#rate"); if (!rateEl) return;
   if (typeof lastTick !== "number") lastTick = Date.now();
@@ -314,13 +342,13 @@ const useRelay = () => (useRelayEl ? useRelayEl.checked : true);
 
 async function submitBest() {
   if (!signer) await connect();
+  const txMsg = $$("#txMsg");
+
   if (!best.nonce) {
-    const el = $$("#txMsg");
-    if (el) el.textContent = "Mine first to get a nonce.";
+    if (txMsg) txMsg.textContent = "Mine first to get a nonce.";
     return;
   }
 
-  const txMsg = $$("#txMsg");
   if (txMsg) txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…";
 
   try {
@@ -333,7 +361,7 @@ async function submitBest() {
         txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a> · waiting confirm…`;
       }
 
-      // wait for 1 confirmation via READ provider
+      // wait 1 confirmation via readProvider
       const rec = await readProvider.waitForTransaction(txHash);
       if (txMsg) {
         if (rec && rec.status === 1) {
@@ -364,38 +392,53 @@ async function submitBest() {
 }
 
 
-// Relay forwarder (Open Mode)
 async function submitViaRelay(calldata) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
-  const res = await fetch(RELAY_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" }, // Open Mode: no X-TMF-Key from browser
-    body: JSON.stringify(body),
-  });
 
-  const text = await res.text();
-  if (!res.ok) throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
+  const tryOnce = async () => {
+    const res  = await fetch(RELAY_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" }, // Open Mode: no X-TMF-Key
+      body: JSON.stringify(body),
+    });
 
-  let json;
-  try { json = JSON.parse(text); } catch { json = {}; }
+    const text = await res.text();
 
-  const txHash = json.tx_hash || json.hash || json.txHash;
-  if (!txHash) throw new Error(`Relay did not return tx hash: ${text.slice(0, 200)}`);
-  return { txHash };
+    // Success
+    if (res.ok) {
+      let json; try { json = JSON.parse(text); } catch { json = {}; }
+      const txHash = json.tx_hash || json.hash || json.txHash;
+      if (!txHash) throw new Error(`Relay did not return tx hash: ${text.slice(0, 200)}`);
+      return { txHash };
+    }
+
+    // Map common soft failure to friendly message
+    const lower = text.toLowerCase();
+    if (res.status === 502 && lower.includes("another transaction has higher priority")) {
+      throw new Error("Another transaction has higher priority");
+    }
+
+    // Generic HTTP failure
+    throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
+  };
+
+  // up to 3 total attempts with small jitter on “priority” error
+  const retries = 2;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await tryOnce();
+    } catch (err) {
+      const msg = (err?.message || "").toLowerCase();
+      const isPriority = msg.includes("another transaction has higher priority");
+      const isLast = i === retries;
+      if (!isPriority || isLast) throw err;
+      // jitter 150–450ms
+      const delay = 150 + Math.floor(Math.random() * 300);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
 }
 
-function friendlyError(e) {
-  const m = (e?.message || "").toLowerCase();
-  if (m.includes("gas_limit too high")) return "Relay cap hit: try again or submit directly.";
-  if (m.includes("quota")) return "Out of free relay quota today.";
-  if (m.includes("passport")) return "You need a TMF Passport to submit.";
-  return e?.shortMessage || e?.message || String(e);
-}
-
-function shareCast() {
-  const text = encodeURIComponent(`Mining MonoMine on Monad testnet. Best hash: ${best.hash || "—"} • Try it:`);
-  window.open(`https://warpcast.com/~/compose?text=${text}`, "_blank");
-}
 
 // ===== Passport helpers =====
 async function hasPassport(addr) {
@@ -421,7 +464,6 @@ async function refreshWalletUI() {
   const addNetBtn  = $$("#addNetworkBtn");
   const mintBtn    = $$("#mintBtn");
 
-  // Figure out current wallet + network status
   let connected = !!account;
   let onMonad = false;
 
@@ -445,15 +487,15 @@ async function refreshWalletUI() {
     }
   } catch {}
 
-  // Passport
+  // Passport status
   const passOk = connected ? await hasPassport(account) : false;
   setPassportStatus(passOk);
 
-  // Toggle buttons
+  // Button states
   if (connectBtn) connectBtn.disabled = connected;
   if (addNetBtn)  addNetBtn.disabled  = !connected || onMonad;
   if (mintBtn) {
-    mintBtn.disabled   = passOk;
+    mintBtn.disabled    = passOk;
     mintBtn.textContent = passOk ? "Passport Minted" : "Mint Passport";
   }
 
@@ -464,6 +506,7 @@ async function refreshWalletUI() {
 
 
 function openTmfModal() {
+  console.log("modal clicked");
   const modal = $$("#tmfModal");
   if (!modal) return;
   modal.hidden = false;
@@ -484,5 +527,3 @@ function closeTmfModal() {
     delete modal._escHandler;
   }
 }
-
-// In init(
