@@ -341,3 +341,18 @@ function fmtSince(ts) {
   return `${m}m ${r}s`;
 }
 
+let nonceCounter = 1n;
+
+function nextNonceHex() {
+  const h = nonceCounter.toString(16).padStart(64, "0");
+  nonceCounter += 1n;
+  return "0x" + h;
+}
+
+function reseedNonceCounter() {
+  const b = crypto.getRandomValues(new Uint8Array(8));
+  let seed = 0n;
+  for (let i = 0; i < 8; i++) seed = (seed << 8n) | BigInt(b[i]);
+  if (seed === 0n) seed = 1n;
+  nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
+}
