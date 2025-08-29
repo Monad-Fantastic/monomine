@@ -84,7 +84,10 @@ export async function toggleMine() {
   if (!seedHex) { await refreshState(); if (!seedHex) return; }
   mining = !mining;
   setTextEventually("mineBtn", mining ? "Stop Mining" : "Start Mining");
-  if (mining) void mineLoop();
+  if (mining) {
+    reseedNonceCounter();   // randomize starting point
+    mineLoop();             // start async loop
+    }
 }
 
 async function mineLoop() {
@@ -194,6 +197,24 @@ async function preflightSubmit(nonceHex) {
     if (msg.includes("paused"))   throw new Error("Game is paused right now.");
     throw e;
   }
+}
+
+// ===== Nonce generator (deterministic incremental, reseedable) =====
+let nonceCounter = 1n;
+
+function nextNonceHex() {
+  // 256-bit hex string, padded
+  const h = nonceCounter.toString(16).padStart(64, "0");
+  nonceCounter += 1n;
+  return "0x" + h;
+}
+
+function reseedNonceCounter() {
+  const b = crypto.getRandomValues(new Uint8Array(8));
+  let seed = 0n;
+  for (let i = 0; i < 8; i++) seed = (seed << 8n) | BigInt(b[i]);
+  if (seed === 0n) seed = 1n;
+  nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
 }
 
 async function submitBest() {
