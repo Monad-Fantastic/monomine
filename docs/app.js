@@ -62,37 +62,60 @@ async function init() {
 }
 
 async function connect() {
+  const statusEl   = $$("#status");
+  const mineBtn    = $$("#mineBtn");
+  const submitBtn  = $$("#submitBtn");
+  const viewAddrEl = $$("#viewAddr");
+
   try {
-    const statusEl   = $$("#status");
-    const mineBtn    = $$("#mineBtn");
-    const submitBtn  = $$("#submitBtn");
-    const viewAddrEl = $$("#viewAddr");
+    if (statusEl) statusEl.textContent = "Requesting wallet…";
+    if (!window.ethereum) {
+      if (statusEl) statusEl.textContent = "No wallet found (install MetaMask or use Passport).";
+      return;
+    }
 
     provider = new ethers.BrowserProvider(window.ethereum, "any");
-    await provider.send("eth_requestAccounts", []);
-    signer = await provider.getSigner();
+    const accounts = await provider.send("eth_requestAccounts", []);
+    signer  = await provider.getSigner();
     account = await signer.getAddress();
+
+    // Build write contract
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
+    // ——— DEBUG what we’re about to touch ———
     console.log("DEBUG: provider", provider);
     console.log("DEBUG: signer", signer);
     console.log("DEBUG: account", account);
+    console.log("DEBUG: statusEl", statusEl);
 
-    if (statusEl) statusEl.textContent = `Connected: ${short(account)}`;
-    if (mineBtn) mineBtn.disabled = false;
+    // ——— Robust status update ———
+    const text = `Connected: ${short(account)}`;
+    if (statusEl) {
+      statusEl.textContent = text;               // normal path
+      if (statusEl.textContent !== text) {       // fallback if something odd
+        statusEl.innerText = text;
+        if (statusEl.innerText !== text) statusEl.innerHTML = text;
+      }
+    }
+
+    if (mineBtn)   mineBtn.disabled   = false;
     if (submitBtn) submitBtn.disabled = false;
 
     if (viewAddrEl) {
       viewAddrEl.href = EXPLORER_ADDR_PREFIX + account;
       viewAddrEl.style.display = "inline-block";
     }
+
+    // also log what the DOM currently contains
+    console.log("DEBUG: current #status html:", statusEl ? statusEl.outerHTML : null);
+
   } catch (e) {
-    const statusEl = $$("#status");
+    console.error("Connect error:", e);
     if (statusEl) statusEl.textContent = `Connect failed: ${e.shortMessage || e.message}`;
-    console.error(e);
   }
 }
+
 
 function short(addr) {
   return addr ? addr.slice(0, 6) + "…" + addr.slice(-4) : "—";
