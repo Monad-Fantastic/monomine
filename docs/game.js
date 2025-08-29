@@ -196,56 +196,134 @@ async function preflightSubmit(nonceHex) {
   }
 }
 
+// --- helpers used by preflight ------------------------------------------------
+async function getCooldownRemaining(addr) {
+  try {
+    const [day, cd, last] = await Promise.all([
+      contract.day(),
+      contract.cooldownSeconds(),
+      contract.lastSubmitAt(await contract.day(), addr),
+    ]);
+    const now = Math.floor(Date.now() / 1000);
+    const remain = Number(cd) - Math.max(0, now - Number(last));
+    return remain > 0 ? remain : 0;
+  } catch (_) { return 0; }
+}
+
+async function isPaused() {
+  try { return await contract.paused(); } catch { return false; }
+}
+
+function shortHash(h) { return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
+
+function decodeRpcError(e) {
+  const raw = e?.data?.message || e?.shortMessage || e?.message || String(e);
+  const m = raw.toLowerCase();
+  if (m.includes("another transaction has higher priority")) return "Network busy: another tx has priority. Try again.";
+  if (m.includes("user rejected")) return "Transaction rejected in wallet.";
+  if (m.includes("nonce too low")) return "Wallet nonce too low; wait a moment and retry.";
+  if (m.includes("insufficient funds")) return "Not enough MON for gas.";
+  if (m.includes("execution reverted")) return "Reverted by contract (cooldown/passport/paused).";
+  return raw;
+}
+
+// --- submit path --------------------------------------------------------------
+
+async function preflightSubmit(addr) {
+  // 1) chain check
+  try {
+    if (!provider) throw new Error("No provider");
+    const net = await provider.getNetwork();
+    if (Number(net.chainId) !== 10143) {
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0x279F" }], // Monad testnet
+        });
+      } catch (err) {
+        if (err?.code === 4902) {
+          await addMonadNetwork();
+          await window.ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x279F" }],
+          });
+        } else {
+          throw new Error("Please switch to Monad Testnet (10143).");
+        }
+      }
+    }
+  } catch {
+    throw new Error("Wallet is not on Monad Testnet (10143).");
+  }
+
+  // 2) app/contract state
+  if (await isPaused()) {
+    throw new Error("Game is currently paused.");
+  }
+
+  // 3) passport
+  const has = await hasPassport(addr);
+  if (!has) {
+    throw new Error("Passport not found — mint a TMF Passport first.");
+  }
+
+  // 4) cooldown
+  const left = await getCooldownRemaining(addr);
+  if (left > 0) {
+    throw new Error(`Cooldown active: wait ${left}s.`);
+  }
+}
+
 export async function submitBest() {
+  const txMsg = document.getElementById("txMsg");
+  const put = (t) => { if (txMsg) txMsg.textContent = t; };
+
   if (!signer) await connect();
-  const txMsg = $$("#txMsg");
-  if (!best.nonce) { txMsg && (txMsg.textContent = "Mine first to get a nonce."); return; }
+  if (!best.nonce) { put("Mine first to get a nonce."); return; }
 
   try {
-    // Pre-flight checks to avoid wasting a tx
-    await preflightSubmit(best.nonce);
-  } catch (e) {
-    txMsg && (txMsg.textContent = friendlyError(e));
+    await preflightSubmit(account);
+  } catch (why) {
+    put(String(why.message || why));
     return;
   }
 
-  txMsg && (txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…");
-
   try {
     if (useRelay()) {
+      put("Relaying (gasless)...");
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data);
-
-      txMsg && (txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a> · waiting confirm…`);
-
+      if (txMsg) {
+        txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a> · waiting confirm…`;
+      }
       const rec = await readProvider.waitForTransaction(txHash);
       if (txMsg) {
-        txMsg.innerHTML =
-          (rec && rec.status === 1)
-            ? `Confirmed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`
-            : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`;
+        txMsg.innerHTML = (rec && rec.status === 1)
+          ? `Confirmed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`
+          : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
       }
     } else {
-      const tx  = await writeContract.submit(best.nonce);
+      put("Submitting tx…");
+      // give the node a concrete gas estimate; if estimate fails it will throw here (and we’ll surface a useful error)
+      const gas = await writeContract.submit.estimateGas(best.nonce);
+      const tx  = await writeContract.submit(best.nonce, { gasLimit: gas });
+      if (txMsg) txMsg.textContent = `Submitting… ${tx.hash}`;
       const rec = await tx.wait();
       if (txMsg) {
-        txMsg.innerHTML =
-          (rec && rec.status === 1)
-            ? `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`
-            : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+        txMsg.innerHTML = (rec && rec.status === 1)
+          ? `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`
+          : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
       }
     }
 
     await refreshState();
   } catch (e) {
-    console.error(e);
-    txMsg && (txMsg.textContent = ` ${friendlyError(e)}`);
+    console.error("submitBest error:", e);
+    put(decodeRpcError(e));
   }
 }
 
-
-
-
+// Keep the jittered retry for the prioritization edge-case you saw (502/-32603).
 export async function submitViaRelay(calldata) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
 
@@ -255,31 +333,38 @@ export async function submitViaRelay(calldata) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+
     const text = await res.text();
 
     if (res.ok) {
       let json; try { json = JSON.parse(text); } catch { json = {}; }
       const txHash = json.tx_hash || json.hash || json.txHash;
-      if (!txHash) throw new Error(`Relay did not return tx hash: ${text.slice(0,200)}`);
+      if (!txHash) throw new Error(`Relay did not return tx hash: ${text.slice(0, 200)}`);
       return { txHash };
     }
 
     const lower = text.toLowerCase();
-    if (res.status === 502 && lower.includes("another transaction has higher priority")) {
+    if ((res.status === 502 || res.status === 500) &&
+        (lower.includes("higher priority") || lower.includes("-32603"))) {
       throw new Error("Another transaction has higher priority");
     }
-    throw new Error(`Relay HTTP ${res.status}: ${text.slice(0,200)}`);
+
+    throw new Error(`Relay HTTP ${res.status}: ${text.slice(0, 200)}`);
   };
 
-  for (let i = 0; i < 3; i++) {
+  const retries = 2;
+  for (let i = 0; i <= retries; i++) {
     try { return await tryOnce(); }
     catch (err) {
       const msg = (err?.message || "").toLowerCase();
-      if (!msg.includes("higher priority") || i === 2) throw err;
+      const isPriority = msg.includes("higher priority");
+      if (!isPriority || i === retries) throw err;
       await new Promise(r => setTimeout(r, 150 + Math.floor(Math.random() * 300)));
     }
   }
 }
+
+
 
 // ---------- passport ----------
 export async function hasPassport(addr) {
