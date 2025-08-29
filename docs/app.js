@@ -52,10 +52,18 @@ async function init() {
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
 
-  // Bind UI (unchanged) ...
+  // Bind UI
+  on("connectBtn", connect);
+  on("mineBtn", toggleMine);
+  on("submitBtn", submitBest);
+  on("shareBtn", shareCast);
+  on("rollBtn", rollIfNeeded);
+  on("mintBtn", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  on("mintBtn2", () => window.open(PASSPORT_MINT_URL, "_blank"));
+  const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
+  const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
 
-  // Wire listeners early so a future account/chain switch re-syncs
-  if (window.ethereum) {
+    if (window.ethereum) {
     window.ethereum.removeAllListeners?.("accountsChanged");
     window.ethereum.on?.("accountsChanged", async (accs) => {
       if (!accs || accs.length === 0) {
@@ -73,10 +81,10 @@ async function init() {
     window.ethereum.on?.("chainChanged", () => window.location.reload());
   }
 
-  // ✅ Try to restore connection without prompting
   await connectSilent();
 
-  // Relay health ping (after silent connect so it doesn’t overwrite status)
+
+  // Relay health ping
   try {
     const healthUrl = RELAY_ENDPOINT.replace("/api/forward", "/health");
     const ping = await fetch(healthUrl, { mode: "cors" });
