@@ -17,6 +17,47 @@ async function loadAbi() {
 const $$ = (id) => document.getElementById(id);
 const on = (id, handler) => { const el = $$(id); if (el) el.onclick = handler; };
 
+
+function setTextEventually(id, text, tries = 20) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.textContent = text;
+    return true;
+  }
+  if (tries > 0) {
+    requestAnimationFrame(() => setTextEventually(id, text, tries - 1));
+  }
+  return false;
+}
+
+function enableEventually(id, enabled = true, tries = 20) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.disabled = !enabled;
+    return true;
+  }
+  if (tries > 0) {
+    requestAnimationFrame(() => enableEventually(id, enabled, tries - 1));
+  }
+  return false;
+}
+
+function showLinkEventually(id, href, tries = 20) {
+  const el = document.getElementById(id);
+  if (el) {
+    if (href) el.href = href;
+    el.style.display = "inline-block";
+    return true;
+  }
+  if (tries > 0) {
+    requestAnimationFrame(() => showLinkEventually(id, href, tries - 1));
+  }
+  return false;
+}
+
+
+
+
 document.addEventListener("DOMContentLoaded", init);
 
 // ====== State ======
@@ -61,60 +102,54 @@ async function init() {
   setInterval(refreshState, 20000);
 }
 
-async function connect() {
-  const statusEl   = $$("#status");
-  const mineBtn    = $$("#mineBtn");
-  const submitBtn  = $$("#submitBtn");
-  const viewAddrEl = $$("#viewAddr");
 
+async function connect() {
   try {
-    if (statusEl) statusEl.textContent = "Requesting wallet…";
+    setTextEventually("status", "Requesting wallet…");
+
     if (!window.ethereum) {
-      if (statusEl) statusEl.textContent = "No wallet found (install MetaMask or use Passport).";
+      setTextEventually("status", "No wallet found (install MetaMask or use Passport).");
       return;
     }
 
     provider = new ethers.BrowserProvider(window.ethereum, "any");
     const accounts = await provider.send("eth_requestAccounts", []);
+    if (!accounts || accounts.length === 0) {
+      setTextEventually("status", "No account authorized.");
+      return;
+    }
+
     signer  = await provider.getSigner();
     account = await signer.getAddress();
 
-    // Build write contract
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
-    // ——— DEBUG what we’re about to touch ———
+    const text = `Connected: ${short(account)}`;
+    setTextEventually("status", text);
+    enableEventually("mineBtn",   true);
+    enableEventually("submitBtn", true);
+    showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
+
+    // Optional: keep UI in sync on account/chain changes
+    if (window.ethereum) {
+      window.ethereum.removeAllListeners?.('accountsChanged');
+      window.ethereum.on?.('accountsChanged', () => connect());
+      window.ethereum.removeAllListeners?.('chainChanged');
+      window.ethereum.on?.('chainChanged', () => window.location.reload());
+    }
+
+    // Debug
     console.log("DEBUG: provider", provider);
     console.log("DEBUG: signer", signer);
     console.log("DEBUG: account", account);
-    console.log("DEBUG: statusEl", statusEl);
-
-    // ——— Robust status update ———
-    const text = `Connected: ${short(account)}`;
-    if (statusEl) {
-      statusEl.textContent = text;               // normal path
-      if (statusEl.textContent !== text) {       // fallback if something odd
-        statusEl.innerText = text;
-        if (statusEl.innerText !== text) statusEl.innerHTML = text;
-      }
-    }
-
-    if (mineBtn)   mineBtn.disabled   = false;
-    if (submitBtn) submitBtn.disabled = false;
-
-    if (viewAddrEl) {
-      viewAddrEl.href = EXPLORER_ADDR_PREFIX + account;
-      viewAddrEl.style.display = "inline-block";
-    }
-
-    // also log what the DOM currently contains
-    console.log("DEBUG: current #status html:", statusEl ? statusEl.outerHTML : null);
-
+    console.log("DEBUG: statusEl exists?", !!document.getElementById('status'));
   } catch (e) {
     console.error("Connect error:", e);
-    if (statusEl) statusEl.textContent = `Connect failed: ${e.shortMessage || e.message}`;
+    setTextEventually("status", `Connect failed: ${e.shortMessage || e.message}`);
   }
 }
+
 
 
 function short(addr) {
