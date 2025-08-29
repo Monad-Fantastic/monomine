@@ -168,10 +168,46 @@ export function friendlyError(e) {
   return e?.shortMessage || e?.message || String(e);
 }
 
-export async function submitBest() {
-  const txMsg = $$("txMsg");
-  if (!signer) { txMsg && (txMsg.textContent = "Connect wallet first."); return; }
+
+async function preflightSubmit(nonceHex) {
+  // Cooldown gate + static call revert reason
+  const [dayIdx, cd, lastAt] = await Promise.all([
+    contract.day(),
+    contract.cooldownSeconds(),
+    contract.lastSubmitAt(await contract.day(), account ?? ethers.ZeroAddress),
+  ]);
+
+  const now = Math.floor(Date.now() / 1000);
+  const nextOk = Number(lastAt) + Number(cd);
+  if (now < nextOk) {
+    const left = nextOk - now;
+    throw new Error(`Cooldown: wait ${left}s`);
+  }
+
+  // Dry-run to capture revert reason (ethers v6 staticCall)
+  try {
+    await writeContract.submit.staticCall(nonceHex);
+  } catch (e) {
+    // Surface common reasons
+    const msg = (e?.shortMessage || e?.message || "").toLowerCase();
+    if (msg.includes("passport")) throw new Error("You need a TMF Passport to submit.");
+    if (msg.includes("paused"))   throw new Error("Game is paused right now.");
+    throw e;
+  }
+}
+
+async function submitBest() {
+  if (!signer) await connect();
+  const txMsg = $$("#txMsg");
   if (!best.nonce) { txMsg && (txMsg.textContent = "Mine first to get a nonce."); return; }
+
+  try {
+    // Pre-flight checks to avoid wasting a tx
+    await preflightSubmit(best.nonce);
+  } catch (e) {
+    txMsg && (txMsg.textContent = friendlyError(e));
+    return;
+  }
 
   txMsg && (txMsg.textContent = useRelay() ? "Relaying (gasless)..." : "Submitting tx…");
 
@@ -180,24 +216,26 @@ export async function submitBest() {
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data);
 
-      txMsg && (txMsg.innerHTML =
-        `Relay accepted: <a class="link" target="_blank" href="${EXPLORER_TX_PREFIX}${txHash}">${short(txHash)}</a> · waiting confirm…`);
+      txMsg && (txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a> · waiting confirm…`);
 
       const rec = await readProvider.waitForTransaction(txHash);
-      txMsg && (txMsg.innerHTML =
-        (rec && rec.status === 1)
-          ? `Confirmed: <a class="link" target="_blank" href="${EXPLORER_TX_PREFIX}${txHash}">${short(txHash)}</a>`
-          : `Tx failed: <a class="link" target="_blank" href="${EXPLORER_TX_PREFIX}${txHash}">${short(txHash)}</a>`);
-
+      if (txMsg) {
+        txMsg.innerHTML =
+          (rec && rec.status === 1)
+            ? `Confirmed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`
+            : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${short(txHash)}</a>`;
+      }
     } else {
-      const tx = await writeContract.submit(best.nonce);
-      txMsg && (txMsg.textContent = `Submitting… ${tx.hash}`);
+      const tx  = await writeContract.submit(best.nonce);
       const rec = await tx.wait();
-      txMsg && (txMsg.innerHTML =
-        (rec && rec.status === 1)
-          ? `Submitted: <a class="link" target="_blank" href="${EXPLORER_TX_PREFIX}${tx.hash}">${short(tx.hash)}</a>`
-          : `Tx failed: <a class="link" target="_blank" href="${EXPLORER_TX_PREFIX}${tx.hash}">${short(tx.hash)}</a>`);
+      if (txMsg) {
+        txMsg.innerHTML =
+          (rec && rec.status === 1)
+            ? `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`
+            : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${short(tx.hash)}</a>`;
+      }
     }
+
     await refreshState();
   } catch (e) {
     console.error(e);
