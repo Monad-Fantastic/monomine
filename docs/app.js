@@ -75,6 +75,10 @@ async function connect() {
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 
+    console.log("DEBUG: provider", provider);
+    console.log("DEBUG: signer", signer);
+    console.log("DEBUG: account", account);
+
     if (statusEl) statusEl.textContent = `Connected: ${short(account)}`;
     if (mineBtn) mineBtn.disabled = false;
     if (submitBtn) submitBtn.disabled = false;
