@@ -46,6 +46,8 @@ let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
 let hashes = 0;
 let lastTick = Date.now();
 
+
+
 async function init() {
   console.log("MonoMine app.js v11.6 loaded");
   const abi = await loadAbi();
@@ -117,6 +119,15 @@ async function init() {
   await refreshWalletUI();
 setInterval(refreshWalletUI, 15000);
 
+}
+
+// ===== Social share helper =====
+function shareCast() {
+  const text = encodeURIComponent(
+    `Mining MonoMine on Monad testnet. Best hash: ${best.hash || "—"} • Try it:`
+  );
+  const url = `https://warpcast.com/~/compose?text=${text}`;
+  window.open(url, "_blank");
 }
 
 async function connect() {
