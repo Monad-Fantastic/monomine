@@ -47,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v11.1 loaded");
+  console.log("MonoMine app.js v11.2 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -102,8 +102,11 @@ async function init() {
   }
 
   await refreshState();
+  await updateUIState();
   setInterval(updateRate, 1000);
   setInterval(refreshState, 20000);
+  setInterval(updateUIState, 15000); 
+
 }
 
 async function connect() {
@@ -125,7 +128,6 @@ async function connect() {
     signer  = await provider.getSigner();
     account = await signer.getAddress();
 
-    // 🔽 ADD THIS BLOCK HERE
     try {
       const net = await provider.getNetwork();
       if (Number(net.chainId) !== 10143) {
@@ -146,7 +148,7 @@ async function connect() {
         }
       }
     } catch (e) { /* non-fatal */ }
-    // 🔼 END INSERT
+
 
     const abi = await loadAbi();
     writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
@@ -156,7 +158,8 @@ async function connect() {
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
 
-    // (listeners etc…)
+    await updateUIState();
+
   } catch (e) {
     console.error("Connect error:", e);
     setTextEventually("status", `Connect failed: ${e.shortMessage || e.message}`);
@@ -189,6 +192,8 @@ async function connectSilent() {
     enableEventually("mineBtn",   true);
     enableEventually("submitBtn", true);
     showLinkEventually("viewAddr", EXPLORER_ADDR_PREFIX + account);
+
+    await updateUIState();
 
     // Update Passport badge
     try {
@@ -372,4 +377,50 @@ function setPassportStatus(ok) {
   el.innerHTML = ok
     ? `Passport: <span class="badge ok">Found</span>`
     : `Passport: <span class="badge no">Not found</span>`;
+}
+
+async function updateUIState() {
+  const connectBtn   = $$("#connectBtn");
+  const addNetBtn    = $$("#addNetworkBtn");  
+  const mintBtn      = $$("#mintBtn");
+
+  // Figure out current wallet + network status
+  let connected = !!account;
+  let onMonad = false;
+
+  try {
+    if (!connected && window.ethereum) {
+      // silent reconnect if the wallet is already authorized
+      const eth = new ethers.BrowserProvider(window.ethereum, "any");
+      const accs = await eth.send("eth_accounts", []);
+      if (accs && accs.length) {
+        provider = eth;
+        signer   = await provider.getSigner();
+        account  = await signer.getAddress();
+        connected = true;
+      }
+    }
+  } catch {}
+
+  try {
+    if (provider) {
+      const net = await provider.getNetwork();
+      onMonad = Number(net.chainId) === 10143;
+    }
+  } catch {}
+
+  // Passport
+  const passOk = connected ? await hasPassport(account) : false;
+  setPassportStatus(passOk);
+
+  // Toggle buttons
+  if (connectBtn) connectBtn.disabled = connected;
+  if (addNetBtn)  addNetBtn.disabled  = !connected || onMonad;
+  if (mintBtn) {
+    mintBtn.disabled = passOk;
+    mintBtn.textContent = passOk ? "Passport Minted" : "Mint Passport";
+  }
+
+  // “View on Explorer” link visibility
+  showLinkEventually("viewAddr", connected ? (EXPLORER_ADDR_PREFIX + account) : "", 1);
 }
