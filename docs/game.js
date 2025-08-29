@@ -169,32 +169,7 @@ export function friendlyError(e) {
 }
 
 
-async function preflightSubmit(nonceHex) {
-  // Cooldown gate + static call revert reason
-  const [dayIdx, cd, lastAt] = await Promise.all([
-    contract.day(),
-    contract.cooldownSeconds(),
-    contract.lastSubmitAt(await contract.day(), account ?? ethers.ZeroAddress),
-  ]);
 
-  const now = Math.floor(Date.now() / 1000);
-  const nextOk = Number(lastAt) + Number(cd);
-  if (now < nextOk) {
-    const left = nextOk - now;
-    throw new Error(`Cooldown: wait ${left}s`);
-  }
-
-  // Dry-run to capture revert reason (ethers v6 staticCall)
-  try {
-    await writeContract.submit.staticCall(nonceHex);
-  } catch (e) {
-    // Surface common reasons
-    const msg = (e?.shortMessage || e?.message || "").toLowerCase();
-    if (msg.includes("passport")) throw new Error("You need a TMF Passport to submit.");
-    if (msg.includes("paused"))   throw new Error("Game is paused right now.");
-    throw e;
-  }
-}
 
 // --- helpers used by preflight ------------------------------------------------
 async function getCooldownRemaining(addr) {
