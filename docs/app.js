@@ -47,7 +47,7 @@ let hashes = 0;
 let lastTick = Date.now();
 
 async function init() {
-  console.log("MonoMine app.js v11.3 loaded");
+  console.log("MonoMine app.js v11.4 loaded");
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
@@ -63,13 +63,14 @@ async function init() {
   on("addNetworkBtn", addMonadNetwork);
   const infoLink = $$("#whatIsPassport"); if (infoLink) infoLink.href = PASSPORT_MINT_URL;
   const viewAddr = $$("#viewAddr"); if (viewAddr) viewAddr.style.display = "none";
-  on("whatIsTmfBtn", openTmf);
-  on("tmfClose", closeTmf);
-  on("tmfOk", closeTmf);
-  on("tmfMint", () => window.open(PASSPORT_MINT_URL, "_blank"));
-  const tmfBackdrop = document.querySelector("#tmfModal .modal-backdrop");
-  if (tmfBackdrop) tmfBackdrop.addEventListener("click", closeTmf);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTmf(); });
+  on("tmfInfoBtn", openTmfModal);
+  on("tmfClose", closeTmfModal);
+  // click on scrim closes
+  document.addEventListener("click", (e) => {
+    const m = $$("#tmfModal");
+    if (!m || m.hidden) return;
+    if (e.target && e.target.getAttribute("data-close") === "1") closeTmfModal();
+  });
 
 
     if (window.ethereum) {
@@ -282,7 +283,8 @@ async function toggleMine() {
 async function mineLoop() {
   while (mining) {
     const nonce = randNonce();
-    const h = ethers.keccak256(ethers.concat([seedHex, ethers.zeroPadValue(0, 32), nonce]));
+    const fid = ethers.toBeHex(0, 32); // 0 as a 32-byte hex
+    const h = ethers.keccak256(ethers.concat([seedHex, fid, nonce]));
     const hv = BigInt(h);
     hashes++;
     if (hv < best.value) {
@@ -434,11 +436,26 @@ async function updateUIState() {
 }
 
 
-function openTmf() {
-  const m = $$("#tmfModal");
-  if (m) { m.classList.add("open"); m.setAttribute("aria-hidden", "false"); }
+function openTmfModal() {
+  const modal = $$("#tmfModal");
+  if (!modal) return;
+  modal.hidden = false;
+  const card = modal.querySelector(".modal__card");
+  card?.focus();
+  // close on ESC
+  const onEsc = (e) => { if (e.key === "Escape") closeTmfModal(); };
+  modal.dataset.esc = "1";
+  document.addEventListener("keydown", onEsc, { once: true });
+  modal._escHandler = onEsc;
 }
-function closeTmf() {
-  const m = $$("#tmfModal");
-  if (m) { m.classList.remove("open"); m.setAttribute("aria-hidden", "true"); }
+function closeTmfModal() {
+  const modal = $$("#tmfModal");
+  if (!modal) return;
+  modal.hidden = true;
+  if (modal._escHandler) {
+    document.removeEventListener("keydown", modal._escHandler);
+    delete modal._escHandler;
+  }
 }
+
+// In init(
