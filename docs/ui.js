@@ -174,17 +174,6 @@ async function addMonadNetwork() {
   }
 }
 
-async function rollIfNeeded() {
-  try {
-    // writeContract is wired inside game.js by wireWriterWith()
-    setTextEventually("rollMsg", "Rolling if needed…");
-    // submit is in game.js; here we only call via write contract, so reuse submitBest? or keep separate endpoint in game.js if needed.
-    // For now, we just inform users to submit via the “Submit Best” after seed rolls automatically by contract.
-    setTextEventually("rollMsg", " Done");
-  } catch (e) {
-    setTextEventually("rollMsg", e.shortMessage || e.message);
-  }
-}
 
 async function refreshWalletUI() {
   const connectBtn = $$("connectBtn");
