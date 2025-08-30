@@ -19,20 +19,28 @@ export let lastTick = Date.now();
 
 import { ethers } from "https://esm.sh/ethers@6.13.2";
 
-
 function log(...args){ console.log("[MonoMine]", ...args); }
 function shortHash(h){ return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
 
+// --- cached chainId to cut RPC spam ---
+let cachedChainId = null;
+async function ensureNetwork() {
+  if (!provider) throw new Error("No provider");
+  if (cachedChainId == null) {
+    const net = await provider.getNetwork();       // 1 RPC once per (re)wire
+    cachedChainId = Number(net.chainId);
+  }
+  return cachedChainId;
+}
 
+// ---------- ABI / DOM helpers ----------
 export async function loadAbi() {
   const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
   return j.abi || j;
 }
-
 export function short(addr) {
   return addr ? addr.slice(0,6) + "…" + addr.slice(-4) : "—";
 }
-
 export function setTextEventually(id, text, tries = 20) {
   const el = document.getElementById(id);
   if (el) { el.textContent = text; return true; }
@@ -60,13 +68,16 @@ export async function initGame() {
   await initTodayLeaderboard();
 }
 
+// close button for submit modal
 document.getElementById("sm_close")?.addEventListener("click", () => closeSubmitModal());
 
 export async function refreshState() {
   try {
-    const day   = await contract.day();
-    const seed  = await contract.seed();
-    const bestS = await contract.bestOfDay(day);
+    const day  = await contract.day(); // 1 call
+    const [seed, bestS] = await Promise.all([
+      contract.seed(),                // 1 call
+      contract.bestOfDay(day),        // 1 call
+    ]);
     seedHex = seed;
 
     setTextEventually("day",  day.toString());
@@ -101,9 +112,8 @@ export async function toggleMine() {
 
 async function mineLoop() {
   const BATCH = 2048;
-  const fidHex = ethers.toBeHex(0, 32);     // 32-byte FID = 0
+  const fidHex = ethers.toBeHex(0, 32); // 32-byte FID = 0
 
-  // normalize bytes once, refresh if seed changes
   let localSeed = seedHex;
   let seedBytes = ethers.getBytes(localSeed);
   const fidBytes = ethers.getBytes(fidHex);
@@ -111,7 +121,7 @@ async function mineLoop() {
   try {
     while (mining) {
       for (let i = 0; i < BATCH && mining; i++) {
-        const nonce = nextNonceHex(); // or randNonce() if you prefer random
+        const nonce = nextNonceHex(); // or randNonce()
         const nonceBytes = ethers.getBytes(nonce);
 
         const h  = ethers.keccak256(ethers.concat([seedBytes, fidBytes, nonceBytes]));
@@ -131,18 +141,13 @@ async function mineLoop() {
           setTextEventually("bestAgo",   `last improve: just now`);
         }
       }
-
-      // yield to UI
       await new Promise(r => setTimeout(r, 0));
 
-      // If seed rolled on-chain, rebind bytes
       if (seedHex !== localSeed) {
         localSeed = seedHex || (await (async () => { await refreshState(); return seedHex; })());
         if (!localSeed) break;
         seedBytes = ethers.getBytes(localSeed);
       }
-
-      // keep the “time since last improvement” fresh
       setTextEventually("bestAgo", `last improve: ${fmtSince(lastImproveTs)}`);
     }
   } catch (e) {
@@ -151,9 +156,6 @@ async function mineLoop() {
     setTextEventually("mineBtn", "Start Mining");
   }
 }
-
-
-
 
 export function updateRate() {
   const el = $$("rate");
@@ -182,27 +184,22 @@ export function friendlyError(e) {
   return e?.shortMessage || e?.message || String(e);
 }
 
-
-
-
-// --- helpers used by preflight ------------------------------------------------
+// --- helpers used by preflight (throttled) ---
 async function getCooldownRemaining(addr) {
   try {
-    const [day, cd, last] = await Promise.all([
-      contract.day(),
-      contract.cooldownSeconds(),
-      contract.lastSubmitAt(await contract.day(), addr),
+    const day = await contract.day(); // 1 call
+    const [cd, last] = await Promise.all([
+      contract.cooldownSeconds(),     // 1 call
+      contract.lastSubmitAt(day, addr) // 1 call
     ]);
     const now = Math.floor(Date.now() / 1000);
     const remain = Number(cd) - Math.max(0, now - Number(last));
     return remain > 0 ? remain : 0;
   } catch (_) { return 0; }
 }
-
 async function isPaused() {
   try { return await contract.paused(); } catch { return false; }
 }
-
 async function getFid(addr) {
   try {
     const passAddr = await contract.passport();
@@ -214,33 +211,16 @@ async function getFid(addr) {
   } catch { return 0n; }
 }
 
-
-
-
 // --- submit path --------------------------------------------------------------
-
 async function preflightSubmit(addr) {
   log("preflight: begin", { addr });
 
-  // 1) network
-  try {
-    if (!provider) throw new Error("No provider");
-    const net = await provider.getNetwork();
-    log("preflight: network", net?.chainId);
-    if (Number(net.chainId) !== 10143) {
-      try {
-        await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
-      } catch (err) {
-        if (err?.code === 4902) {
-          await addMonadNetwork();
-          await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
-        } else {
-          throw new Error("Please switch to Monad Testnet (10143).");
-        }
-      }
-    }
-  } catch {
-    throw new Error("Wallet is not on Monad Testnet (10143).");
+  // 1) network (cached)
+  const id = await ensureNetwork();
+  log("preflight: network", id);
+  if (id !== 10143) {
+    // do not call addMonadNetwork from here (lives in ui.js)
+    throw new Error("Please switch to Monad Testnet (10143).");
   }
 
   // 2) paused
@@ -248,7 +228,7 @@ async function preflightSubmit(addr) {
   log("preflight: paused?", paused);
   if (paused) throw new Error("Game is currently paused.");
 
-  // 3) passport + fid
+  // 3) passport + fid (passport cached inside hasPassport)
   const has = await hasPassport(addr);
   const fid = await getFid(addr);
   log("preflight: passport?", has, "fid=", String(fid));
@@ -283,11 +263,10 @@ export async function submitBest() {
 
   try {
     if (useRelay()) {
-      // ⚠️ Do NOT simulate here — relay uses ERC-2771, different msg.sender/_msgSender
+      // ⚠️ Skip simulation for relay (msg.sender differs under 2771)
       put("Relaying (gasless)…");
       updateSubmitModal("Sending through TMF relay…");
 
-      // best-effort estimate → cushion → pass to relay
       const gasEst   = await writeContract.submit.estimateGas(best.nonce).catch(()=>null);
       const gasLimit = gasEst ? Math.ceil(Number(gasEst) * 1.25) : 300000;
       log("submit: relay gas estimate", { gasEst: String(gasEst||"n/a"), gasLimit });
@@ -309,7 +288,7 @@ export async function submitBest() {
         updateSubmitModal(`Tx failed. ${detail}`, link);
       }
     } else {
-      // Direct wallet path → safe to simulate
+      // Direct wallet path — safe to simulate
       put("Submitting tx…");
       updateSubmitModal("Simulating then broadcasting from your wallet…");
 
@@ -354,9 +333,7 @@ export async function submitBest() {
   }
 }
 
-
-
-// Keep the jittered retry for the prioritization 
+// Relay with jittered retry
 export async function submitViaRelay(calldata, gasLimit = 300000) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: gasLimit };
   log("relay: POST", RELAY_ENDPOINT, body);
@@ -400,19 +377,30 @@ export async function submitViaRelay(calldata, gasLimit = 300000) {
   }
 }
 
+// ---------- passport (with 60s cache) ----------
+const passportCache = new Map(); // addr -> { ts, ok }
 
-
-// ---------- passport ----------
 export async function hasPassport(addr) {
+  const key = addr?.toLowerCase?.();
+  const now = Date.now();
+  const cached = key ? passportCache.get(key) : null;
+  if (cached && (now - cached.ts) < 60_000) return cached.ok;
+
   try {
     const passAddr = await contract.passport();
-    if (!passAddr || passAddr === ethers.ZeroAddress) return false;
+    if (!passAddr || passAddr === ethers.ZeroAddress) {
+      if (key) passportCache.set(key, { ts: now, ok: false });
+      return false;
+    }
     const erc721Abi = ["function balanceOf(address) view returns (uint256)"];
     const pass = new ethers.Contract(passAddr, erc721Abi, readProvider);
     const bal  = await pass.balanceOf(addr);
-    return (bal && BigInt(bal) > 0n);
+    const ok   = (bal && BigInt(bal) > 0n);
+    if (key) passportCache.set(key, { ts: now, ok });
+    return ok;
   } catch (e) {
     console.warn("Passport check failed:", e);
+    if (key) passportCache.set(key, { ts: now, ok: false });
     return false;
   }
 }
@@ -426,9 +414,10 @@ export function setPassportStatus(ok) {
 
 // expose writer wiring for UI module
 export async function wireWriterWith(s) {
-  signer = s.signer;
+  signer   = s.signer;
   provider = s.provider;
-  account = s.account;
+  account  = s.account;
+  cachedChainId = null; // reset network cache on rewire
   const abi = await loadAbi();
   writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 }
@@ -439,13 +428,11 @@ let lastImproveTs = null;
 
 // Count leading zero bits of a 0x…32-byte hex
 function leadingZeroBits(hex32) {
-  // assume 0x-prefixed 64-hex chars
   const s = hex32.slice(2);
   let bits = 0;
   for (let i = 0; i < s.length; i++) {
     const nib = parseInt(s[i], 16);
     if (nib === 0) { bits += 4; continue; }
-    // first non-zero nibble -> + (3 - log2(nib) floor)
     if (nib & 0x8) return bits + 0;
     if (nib & 0x4) return bits + 1;
     if (nib & 0x2) return bits + 2;
@@ -453,7 +440,6 @@ function leadingZeroBits(hex32) {
   }
   return 256;
 }
-
 function fmtSince(ts) {
   if (!ts) return "—";
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -461,15 +447,12 @@ function fmtSince(ts) {
   const m = Math.floor(s / 60), r = s % 60;
   return `${m}m ${r}s`;
 }
-
 let nonceCounter = 1n;
-
 function nextNonceHex() {
   const h = nonceCounter.toString(16).padStart(64, "0");
   nonceCounter += 1n;
   return "0x" + h;
 }
-
 function reseedNonceCounter() {
   const b = crypto.getRandomValues(new Uint8Array(8));
   let seed = 0n;
@@ -478,14 +461,13 @@ function reseedNonceCounter() {
   nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
 }
 
-
-// ===== Today Leaderboard (client-side via events) =====
-const TOP_N = 50; // 50 is HUGE :) 
+// ===== Today Leaderboard (polling; RPC friendly) =====
+const TOP_N = 50; // huge 🙂
 
 let lb = {
   day: null,
   rows: new Map(),     // addr -> { addr, fid, bestHashBig, bestHash, submits, at }
-  unsub: null,         // will be a clearInterval
+  unsub: null,         // clearInterval handle
   renderPending: false,
   lastScanned: 0,      // last block we processed
 };
@@ -494,29 +476,26 @@ function big(h){ try { return BigInt(h); } catch { return (1n<<256n)-1n; } }
 function shortAddr(a){ return a ? a.slice(0,6)+"…"+a.slice(-4) : "—"; }
 function ago(ts){
   const s = Math.max(0, Math.floor(Date.now()/1000 - Number(ts)));
-  if (s < 60) return `${s}s`; const m = Math.floor(s/60); if (m < 60) return `${m}m`;
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s/60); if (m < 60) return `${m}m`;
   const h = Math.floor(m/60); return `${h}h`;
 }
 
 export async function initTodayLeaderboard() {
   lb.rows.clear();
-
   const curDay = await contract.day();
   lb.day = Number(curDay);
-
   await backfillToday(lb.day);
-  startTodayPolling(lb.day);   // <-- polling, not provider.on
+  startTodayPolling(lb.day);
   renderToday();
 }
-
 
 async function backfillToday(dayNum) {
   try {
     const latest = await readProvider.getBlockNumber();
 
-    // scan only a modest window to keep things cheap + within limits
-    const MAX_LOOKBACK = 800;     // total blocks
-    const CHUNK        = 100;     // RPC hard limit per call
+    const MAX_LOOKBACK = 800;
+    const CHUNK        = 100;
     const fromStart    = Math.max(0, latest - MAX_LOOKBACK);
 
     const topic0 = submittedTopic();
@@ -537,19 +516,17 @@ async function backfillToday(dayNum) {
         upsertRow(player, fid, h, at, /*triggerRender*/ false);
       }
     }
-
-    lb.lastScanned = latest; // start polling from here
+    lb.lastScanned = latest;
   } catch (e) {
     console.warn("backfillToday failed:", e);
-    // if we failed, at least initialize lastScanned so polling can recover
     try { lb.lastScanned = await readProvider.getBlockNumber(); } catch {}
   }
 }
 
 function startTodayPolling(dayNum) {
-  stopTodayStream(); // clear any prior interval
+  stopTodayStream();
 
-  const POLL_MS = 3000;
+  const POLL_MS = 10_000;
   const CHUNK   = 100;
   const topic0  = submittedTopic();
   const topic1  = dayTopic(dayNum);
@@ -558,7 +535,7 @@ function startTodayPolling(dayNum) {
     try {
       const latest = await readProvider.getBlockNumber();
       let from = Math.min(lb.lastScanned + 1, latest);
-      if (from > latest) return; // nothing new
+      if (from > latest) return;
 
       while (from <= latest) {
         const to = Math.min(latest, from + CHUNK - 1);
@@ -583,12 +560,10 @@ function startTodayPolling(dayNum) {
         from = to + 1;
       }
     } catch (e) {
-      // keep calm and poll on
-      // console.warn("poll error:", e);
+      // swallow transient RPC hiccups
     }
   };
 
-  // kick once immediately; then interval
   tick();
   const id = setInterval(tick, POLL_MS);
   lb.unsub = () => clearInterval(id);
@@ -597,7 +572,6 @@ function startTodayPolling(dayNum) {
 function stopTodayStream() {
   if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
 }
-
 
 function upsertRow(player, fid, hash32, at, triggerRender) {
   const key = player.toLowerCase();
@@ -658,16 +632,11 @@ export async function refreshTodayIfDayChanged() {
   } catch {}
 }
 
-
 const SUBMITTED_SIG = "Submitted(uint256,address,uint256,bytes32,uint256)";
-function submittedTopic() {
-  return ethers.id(SUBMITTED_SIG);
-}
-function dayTopic(dayNum) {
-  return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
-}
+function submittedTopic() { return ethers.id(SUBMITTED_SIG); }
+function dayTopic(dayNum)  { return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32); }
 
-
+// ---------- submit modal helpers ----------
 function openSubmitModal(title = "Submitting…", body = "Preparing transaction…") {
   const m = document.getElementById("submitModal");
   if (!m) return;
@@ -675,11 +644,9 @@ function openSubmitModal(title = "Submitting…", body = "Preparing transaction�
   document.getElementById("sm_body").textContent  = body;
   document.getElementById("sm_link").innerHTML    = "";
   m.hidden = false;
-  m.removeAttribute("aria-hidden"); // FIX: avoid aria-hidden on focused subtree
-  // focus the card
+  m.removeAttribute("aria-hidden"); // avoid aria-hidden on focused subtree
   m.querySelector(".modal__card")?.focus();
 }
-
 function updateSubmitModal(body, linkHtml) {
   const b = document.getElementById("sm_body");
   if (b) b.textContent = body;
@@ -688,7 +655,6 @@ function updateSubmitModal(body, linkHtml) {
     if (l) l.innerHTML = linkHtml;
   }
 }
-
 function closeSubmitModal() {
   const m = document.getElementById("submitModal");
   if (!m) return;
@@ -731,7 +697,7 @@ function decodeRpcErrorVerbose(e) {
     (e?.message) ||
     String(e);
 
-  const m = basic.toLowerCase();
+  const m = (basic || "").toLowerCase();
   if (m.includes("gas_limit too high"))  return "Relay cap hit: try again or submit directly. (" + basic + ")";
   if (m.includes("quota"))               return "Out of free relay quota today. (" + basic + ")";
   if (m.includes("passport"))            return "You need a TMF Passport to submit. (" + basic + ")";
@@ -739,10 +705,10 @@ function decodeRpcErrorVerbose(e) {
   if (m.includes("user rejected"))       return "Transaction rejected in wallet.";
   if (m.includes("insufficient funds"))  return "Not enough MON for gas.";
   if (m.includes("execution reverted"))  return "Reverted by contract (cooldown/passport/paused). (" + basic + ")";
-
   return basic;
 }
 
+// Handy one-click probe (call from console if needed)
 export async function debugEnvProbe() {
   try {
     const [cid, pf, rm, cd, es, paused] = await Promise.all([

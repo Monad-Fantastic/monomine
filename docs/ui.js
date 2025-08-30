@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.2 loaded");
+  console.log("MonoMine v13.3 loaded");
   await initGame();
   await debugEnvProbe();
 
@@ -62,9 +62,9 @@ async function initUI() {
   await pingRelay();
   await refreshState();
   setInterval(updateRate, 1000);
-  setInterval(refreshState, 20000);
+  setInterval(refreshState, 60000);
   await refreshWalletUI();
-  setInterval(refreshWalletUI, 15000);
+  setInterval(refreshWalletUI, 60000);
 }
 
 async function pingRelay() {
