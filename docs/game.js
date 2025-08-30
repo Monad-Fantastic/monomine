@@ -546,9 +546,6 @@ function stopTodayStream() {
   if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
 }
 
-function stopTodayStream() {
-  if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
-}
 
 function upsertRow(player, fid, hash32, at, triggerRender) {
   const key = player.toLowerCase();
