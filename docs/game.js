@@ -295,7 +295,7 @@ export async function submitBest() {
     }
 
     await refreshState();
-    
+
   } catch (e) {
     console.error("submitBest error:", e);
     put(decodeRpcError(e));
@@ -450,38 +450,59 @@ export async function initTodayLeaderboard() {
 
 async function backfillToday(dayNum) {
   try {
-    // narrow to since rolledAt (with a safety pad)
-    const rolledAt = Number(await contract.rolledAt?.()) || 0;
-    const nowSec   = Math.floor(Date.now()/1000);
-    const windowSec = Math.max(3600, nowSec - rolledAt + 60);
     const latest = await readProvider.getBlockNumber();
-    const from   = Math.max(0, latest - windowSec); // ~1s blocks assumption
-    const to     = latest;
 
-    // event Submitted(uint256 indexed day, address player, uint256 fid, bytes32 h, uint256 at)
-    const filter = contract.filters.Submitted(dayNum);
-    const logs = await contract.queryFilter(filter, from, to);
+    // Keep it modest to avoid hammering the RPC. Adjust if you want more history.
+    const MAX_LOOKBACK = 800;      // total blocks to scan
+    const CHUNK        = 100;      // RPC hard limit per call
+    const fromStart    = Math.max(0, latest - MAX_LOOKBACK);
 
-    for (const log of logs) {
-      const { player, fid, h, at } = log.args;
-      upsertRow(player, fid, h, at, false);
+    const topic0 = SUBMITTED_TOPIC;
+    const topic1 = dayTopic(dayNum);
+
+    for (let from = fromStart; from <= latest; from += CHUNK) {
+      const to = Math.min(latest, from + CHUNK - 1);
+      const logs = await readProvider.getLogs({
+        address: MONOMINE_ADDRESS,
+        fromBlock: from,
+        toBlock: to,
+        topics: [topic0, topic1], // only events with this day indexed
+      });
+
+      for (const log of logs) {
+        // Parse using the ABI to get named args
+        const parsed = contract.interface.parseLog(log);
+        // Submitted(uint256 day, address player, uint256 fid, bytes32 h, uint256 at)
+        const { player, fid, h, at } = parsed.args;
+        upsertRow(player, fid, h, at, /*isEvent*/ false);
+      }
     }
   } catch (e) {
     console.warn("backfillToday failed:", e);
   }
 }
 
-function startTodayStream(dayNum) {
+async function startTodayStream(dayNum) {
   stopTodayStream();
+
   try {
-    const filter = contract.filters.Submitted(dayNum);
-    const onLog = (log) => {
-      if (!log?.args) return;
-      const { player, fid, h, at } = log.args;
-      upsertRow(player, fid, h, at, true);
+    const filter = {
+      address: MONOMINE_ADDRESS,
+      topics: [SUBMITTED_TOPIC, dayTopic(dayNum)],
     };
-    readProvider.on(filter, onLog);
-    lb.unsub = () => readProvider.off(filter, onLog);
+
+    const listener = (log) => {
+      try {
+        const parsed = contract.interface.parseLog(log);
+        const { player, fid, h, at } = parsed.args;
+        upsertRow(player, fid, h, at, /*isEvent*/ true);
+      } catch (e) {
+        console.warn("stream parse failed:", e);
+      }
+    };
+
+    readProvider.on(filter, listener);
+    lbState.unsub = () => readProvider.off(filter, listener);
   } catch (e) {
     console.warn("startTodayStream failed:", e);
   }
@@ -548,4 +569,12 @@ export async function refreshTodayIfDayChanged() {
       await initTodayLeaderboard();
     }
   } catch {}
+}
+
+// Event signature + topics
+const SUBMITTED_TOPIC = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
+
+function dayTopic(dayNum) {
+  // indexed uint256 topic (zero-padded)
+  return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
 }
