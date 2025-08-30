@@ -299,22 +299,12 @@ export async function getPassportStatus(addr) {
 }
 
 // Back-compat: allow boolean OR object
-export function setPassportStatus(x) {
+export function setPassportStatus(ok) {
   const el = $$("passportStatus");
   if (!el) return;
-  if (typeof x === "object" && x) {
-    if (x.hasNft && x.fid && x.fid !== 0n) {
-      el.innerHTML = `Passport: <span class="badge ok">Linked (FID ${String(x.fid)})</span>`;
-    } else if (x.hasNft) {
-      el.innerHTML = `Passport: <span class="badge no">NFT only (no FID)</span>`;
-    } else {
-      el.innerHTML = `Passport: <span class="badge no">Not found</span>`;
-    }
-  } else {
-    el.innerHTML = x
-      ? `Passport: <span class="badge ok">Found</span>`
-      : `Passport: <span class="badge no">Not found</span>`;
-  }
+  el.innerHTML = ok
+    ? `Passport: <span class="badge ok">Found</span>`
+    : `Passport: <span class="badge no">Not found</span>`;
 }
 
 function decodeRpcErrorVerbose(e) {
@@ -334,25 +324,42 @@ async function preflightSubmit(addr) {
   log("preflight: begin", { addr });
 
   // 1) network
-  try { await ensureMonadTestnet(); }
-  catch { throw new Error("Wallet is not on Monad Testnet (10143)."); }
-  const prov = new ethers.BrowserProvider(window.ethereum, "any");
-  const net = await prov.getNetwork();
-  log("preflight: network", Number(net.chainId));
+  try {
+    if (!provider) throw new Error("No provider");
+    const net = await provider.getNetwork();
+    log("preflight: network", Number(net?.chainId || 0));
+    if (Number(net.chainId) !== 10143) {
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: "0x279F" }],
+        });
+      } catch (err) {
+        if (err?.code === 4902) {
+          await addMonadNetwork();
+          await window.ethereum.request({
+            method: "wallet_switchEthereumChain",
+            params: [{ chainId: "0x279F" }],
+          });
+        } else {
+          throw new Error("Please switch to Monad Testnet (10143).");
+        }
+      }
+    }
+  } catch {
+    throw new Error("Wallet is not on Monad Testnet (10143).");
+  }
 
-  // 2) paused?
+  // 2) paused
   const paused = await isPaused();
   log("preflight: paused?", paused);
   if (paused) throw new Error("Game is currently paused.");
 
-  // 3) TMF Passport status
-  const ps = await getPassportStatus(addr);
-  log("preflight: passport?", ps);
-  if (!ps.hasNft) {
-    throw new Error("TMF Passport not found for this wallet. Please mint on the TMF Passport page with this wallet.");
-  }
-  if (ps.fid === 0n) {
-    throw new Error("Your wallet holds the TMF Passport NFT but it isn’t linked to your Farcaster ID (fid=0). Open the TMF Passport page and link this wallet.");
+  // 3) passport (NFT only — no FID gating)
+  const hasNft = await hasPassport(addr);
+  log("preflight: passport NFT?", hasNft);
+  if (!hasNft) {
+    throw new Error("No TMF Passport found for this wallet.");
   }
 
   // 4) cooldown
@@ -367,12 +374,8 @@ export async function submitBest() {
   const txMsg = document.getElementById("txMsg");
   const put = (t) => { if (txMsg) txMsg.textContent = t; };
 
-  if (!signer) {
-    openSubmitModal("Connect first", "Please connect your wallet before submitting.");
-    put("Connect wallet first.");
-    return;
-  }
-  if (!best.nonce) { openSubmitModal("No best yet", "Mine first to get a nonce."); put("Mine first to get a nonce."); return; }
+  if (!signer) await connect();
+  if (!best.nonce) { put("Mine first to get a nonce."); return; }
 
   openSubmitModal("Submitting…", "Running preflight checks…");
 
@@ -388,7 +391,7 @@ export async function submitBest() {
 
   try {
     if (useRelay()) {
-      // Relay path (do not simulate — forwarder changes sender)
+      // ✅ Do NOT simulate here — relay uses trusted forwarder
       put("Relaying (gasless)…");
       updateSubmitModal("Sending through TMF relay…");
 
@@ -399,7 +402,7 @@ export async function submitBest() {
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data, gasLimit);
 
-      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
+      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${txHash.slice(0,6)}…${txHash.slice(-4)}</a>`;
       updateSubmitModal("Relay accepted — waiting for confirmation…", link);
 
       const rec = await readProvider.waitForTransaction(txHash);
@@ -413,7 +416,7 @@ export async function submitBest() {
         updateSubmitModal(`Tx failed. ${detail}`, link);
       }
     } else {
-      // Direct path (simulate first)
+      // ✅ Direct wallet path: simulation is OK
       put("Submitting tx…");
       updateSubmitModal("Simulating then broadcasting from your wallet…");
 
@@ -434,7 +437,7 @@ export async function submitBest() {
       log("submit: direct gas estimate", { gas: String(gas), gasLimit });
 
       const tx  = await writeContract.submit(best.nonce, { gasLimit });
-      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
+      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${tx.hash.slice(0,6)}…${tx.hash.slice(-4)}</a>`;
       updateSubmitModal("Broadcasted — waiting for confirmation…", link);
 
       const rec = await tx.wait();
@@ -457,6 +460,7 @@ export async function submitBest() {
     updateSubmitModal(msg);
   }
 }
+
 
 // Relay helper with logs + jittered retry
 export async function submitViaRelay(calldata, gasLimit = 300000) {
@@ -530,7 +534,6 @@ async function explainTxFailure(txHash, extra = "") {
 
 // ---- TMF Passport (legacy helper) ----
 export async function hasPassport(addr) {
-  // kept for imports elsewhere; note this checks NFT only
   try {
     const passAddr = await contract.passport();
     if (!passAddr || passAddr === ethers.ZeroAddress) return false;
@@ -538,11 +541,11 @@ export async function hasPassport(addr) {
     const pass = new ethers.Contract(passAddr, erc721Abi, readProvider);
     const bal  = await pass.balanceOf(addr);
     return (bal && BigInt(bal) > 0n);
-  } catch {
+  } catch (e) {
+    console.warn("Passport check failed:", e);
     return false;
   }
 }
-
 // ---- Leaderboard: Today (polling) ----
 const TOP_N = 50;
 let lb = {

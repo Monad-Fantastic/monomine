@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.8.2 loaded");
+  console.log("MonoMine v13.8.3 loaded");
   await initGame();
   await debugEnvProbe();
 
