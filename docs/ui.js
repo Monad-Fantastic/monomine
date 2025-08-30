@@ -3,7 +3,7 @@
 import {
   $$, PASSPORT_MINT_URL,
   EXPLORER_ADDR_PREFIX, RELAY_ENDPOINT,
-  initGame, refreshState, wireWriterWith,
+  initGame, refreshState, 
   toggleMine, updateRate, submitBest,
   hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually, debugEnvProbe, getPassportStatus
 } from "./game.js";
