@@ -211,6 +211,75 @@ async function getFid(addr) {
   } catch { return 0n; }
 }
 
+
+
+
+
+// ---------- passport (with 60s cache; report both NFT + FID) ----------
+const passportCache = new Map(); // addr -> { ts, hasNft, fid }
+
+async function getPassportContract() {
+  try {
+    const passAddr = await contract.passport();
+    if (!passAddr || passAddr === ethers.ZeroAddress) return null;
+    const abi = [
+      "function balanceOf(address) view returns (uint256)",
+      "function fidOf(address) view returns (uint256)"
+    ];
+    return new ethers.Contract(passAddr, abi, readProvider);
+  } catch { return null; }
+}
+
+export async function getPassportStatus(addr) {
+  const key = addr?.toLowerCase?.();
+  const now = Date.now();
+  const cached = key ? passportCache.get(key) : null;
+  if (cached && (now - cached.ts) < 60_000) return cached;
+
+  const res = { ts: now, hasNft: false, fid: 0n };
+  try {
+    const pass = await getPassportContract();
+    if (!pass) {
+      if (key) passportCache.set(key, res);
+      return res;
+    }
+    const [bal, fid] = await Promise.all([
+      pass.balanceOf(addr).catch(()=>0n),
+      pass.fidOf(addr).catch(()=>0n),
+    ]);
+    res.hasNft = (bal && BigInt(bal) > 0n);
+    res.fid    = BigInt(fid || 0n);
+    if (key) passportCache.set(key, res);
+    return res;
+  } catch {
+    if (key) passportCache.set(key, res);
+    return res;
+  }
+}
+
+// back-compat helpers (kept name so other code doesn’t break)
+export async function hasPassport(addr) {
+  const s = await getPassportStatus(addr);
+  return s.fid !== 0n; // gate by fid (not by NFT)
+}
+
+export function setPassportStatus(okOrObj) {
+  const el = $$("passportStatus"); if (!el) return;
+  const s = (typeof okOrObj === "object") ? okOrObj : { hasNft: !!okOrObj, fid: okOrObj ? 1n : 0n };
+  // UI shows both signals so users understand what’s wrong
+  if (s.fid !== 0n) {
+    el.innerHTML = `Passport: <span class="badge ok">Linked (FID ${s.fid})</span>`;
+  } else if (s.hasNft) {
+    el.innerHTML = `Passport: <span class="badge no">NFT only (no FID)</span>`;
+  } else {
+    el.innerHTML = `Passport: <span class="badge no">Not found</span>`;
+  }
+}
+
+
+
+
+
 // --- submit path --------------------------------------------------------------
 async function preflightSubmit(addr) {
   log("preflight: begin", { addr });
@@ -218,21 +287,23 @@ async function preflightSubmit(addr) {
   // 1) network (cached)
   const id = await ensureNetwork();
   log("preflight: network", id);
-  if (id !== 10143) {
-    // do not call addMonadNetwork from here (lives in ui.js)
-    throw new Error("Please switch to Monad Testnet (10143).");
-  }
+  if (id !== 10143) throw new Error("Please switch to Monad Testnet (10143).");
 
   // 2) paused
   const paused = await isPaused();
   log("preflight: paused?", paused);
   if (paused) throw new Error("Game is currently paused.");
 
-  // 3) passport + fid (passport cached inside hasPassport)
-  const has = await hasPassport(addr);
-  const fid = await getFid(addr);
-  log("preflight: passport?", has, "fid=", String(fid));
-  if (!has || fid === 0n) throw new Error("Passport not found — mint a TMF Passport first.");
+  // 3) passport status
+  const ps = await getPassportStatus(addr);
+  log("preflight: passport?", { hasNft: ps.hasNft, fid: String(ps.fid) });
+  setPassportStatus(ps); // keep UI consistent
+  if (ps.fid === 0n) {
+    const hint = ps.hasNft
+      ? "Your wallet holds the Passport NFT but it isn’t linked to a Farcaster ID (fid=0). Re-link or mint via Monad Games ID."
+      : "Passport not found — mint a TMF Passport first.";
+    throw new Error(hint);
+  }
 
   // 4) cooldown
   const left = await getCooldownRemaining(addr);
@@ -241,6 +312,7 @@ async function preflightSubmit(addr) {
 
   log("preflight: ok");
 }
+
 
 export async function submitBest() {
   const txMsg = document.getElementById("txMsg");
@@ -377,40 +449,6 @@ export async function submitViaRelay(calldata, gasLimit = 300000) {
   }
 }
 
-// ---------- passport (with 60s cache) ----------
-const passportCache = new Map(); // addr -> { ts, ok }
-
-export async function hasPassport(addr) {
-  const key = addr?.toLowerCase?.();
-  const now = Date.now();
-  const cached = key ? passportCache.get(key) : null;
-  if (cached && (now - cached.ts) < 60_000) return cached.ok;
-
-  try {
-    const passAddr = await contract.passport();
-    if (!passAddr || passAddr === ethers.ZeroAddress) {
-      if (key) passportCache.set(key, { ts: now, ok: false });
-      return false;
-    }
-    const erc721Abi = ["function balanceOf(address) view returns (uint256)"];
-    const pass = new ethers.Contract(passAddr, erc721Abi, readProvider);
-    const bal  = await pass.balanceOf(addr);
-    const ok   = (bal && BigInt(bal) > 0n);
-    if (key) passportCache.set(key, { ts: now, ok });
-    return ok;
-  } catch (e) {
-    console.warn("Passport check failed:", e);
-    if (key) passportCache.set(key, { ts: now, ok: false });
-    return false;
-  }
-}
-export function setPassportStatus(ok) {
-  const el = $$("passportStatus");
-  if (!el) return;
-  el.innerHTML = ok
-    ? `Passport: <span class="badge ok">Found</span>`
-    : `Passport: <span class="badge no">Not found</span>`;
-}
 
 // expose writer wiring for UI module
 export async function wireWriterWith(s) {

@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.3 loaded");
+  console.log("MonoMine v13.4 loaded");
   await initGame();
   await debugEnvProbe();
 
@@ -217,8 +217,8 @@ async function refreshWalletUI() {
   }
 
   // passport
-  const passOk = connected && account ? await hasPassport(account) : false;
-  setPassportStatus(passOk);
+const ps = (connected && account) ? await getPassportStatus(account) : { hasNft:false, fid:0n };
+setPassportStatus(ps);
 
   // buttons
   if (connectBtn) connectBtn.disabled = connected;
