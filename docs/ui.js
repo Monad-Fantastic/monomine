@@ -5,7 +5,7 @@ import {
   EXPLORER_ADDR_PREFIX, RELAY_ENDPOINT,
   initGame, refreshState, wireWriterWith,
   toggleMine, updateRate, submitBest,
-  hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually, debugEnvProbe
+  hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually, debugEnvProbe, getPassportStatus
 } from "./game.js";
 
 import { ethers } from "https://esm.sh/ethers@6.13.2";
