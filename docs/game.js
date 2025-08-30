@@ -1,5 +1,8 @@
-// game.js — mining + submit + read-only state
+// game.js — mining + submit + read-only state (TMF Passport only)
 
+import { ethers } from "https://esm.sh/ethers@6.13.2";
+
+// ---- CONFIG ----
 export const MONAD_RPC = "https://testnet-rpc.monad.xyz";
 export const MONOMINE_ADDRESS = "0x49c52AEb95BEA2E22bede837B77C4e482840751e";
 export const RELAY_ENDPOINT = "https://losarchos.com/api/forward";
@@ -8,39 +11,8 @@ export const EXPLORER_TX_PREFIX   = "https://testnet.monadexplorer.com/tx/";
 export const PASSPORT_MINT_URL =
   "https://warpcast.com/~/compose?text=Mint%20your%20TMF%20Passport%20to%20play%20MonoMine&embeds[]=https%3A%2F%2Flosarchos.com%2Fframe";
 
+// ---- DOM helpers ----
 export const $$ = (id) => document.getElementById(id);
-
-export let readProvider, provider, signer, contract, writeContract, account;
-export let seedHex = null;
-export let mining = false;
-export let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
-export let hashes = 0;
-export let lastTick = Date.now();
-
-import { ethers } from "https://esm.sh/ethers@6.13.2";
-
-function log(...args){ console.log("[MonoMine]", ...args); }
-function shortHash(h){ return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
-
-// --- cached chainId to cut RPC spam ---
-let cachedChainId = null;
-async function ensureNetwork() {
-  if (!provider) throw new Error("No provider");
-  if (cachedChainId == null) {
-    const net = await provider.getNetwork();       // 1 RPC once per (re)wire
-    cachedChainId = Number(net.chainId);
-  }
-  return cachedChainId;
-}
-
-// ---------- ABI / DOM helpers ----------
-export async function loadAbi() {
-  const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
-  return j.abi || j;
-}
-export function short(addr) {
-  return addr ? addr.slice(0,6) + "…" + addr.slice(-4) : "—";
-}
 export function setTextEventually(id, text, tries = 20) {
   const el = document.getElementById(id);
   if (el) { el.textContent = text; return true; }
@@ -60,24 +32,46 @@ export function showLinkEventually(id, href, tries = 20) {
   return false;
 }
 
-// ---------- contract state (read) ----------
+// ---- State ----
+export let readProvider, provider, signer, contract, writeContract, account;
+export let seedHex = null;
+export let mining = false;
+export let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
+export let hashes = 0;
+export let lastTick = Date.now();
+
+// ---- Utils ----
+function log(...args){ console.log("[MonoMine]", ...args); }
+export function short(addr) { return addr ? addr.slice(0,6) + "…" + addr.slice(-4) : "—"; }
+function shortHash(h){ return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
+
+// ---- ABI ----
+export async function loadAbi() {
+  const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
+  return j.abi || j;
+}
+
+// ---- Contract init ----
 export async function initGame() {
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
-  await initTodayLeaderboard();
-}
 
-// close button for submit modal
-document.getElementById("sm_close")?.addEventListener("click", () => closeSubmitModal());
+  // Debug probe (prints TMF config + chainId)
+  await debugEnvProbe();
+
+  // Leaderboard
+  await initTodayLeaderboard();
+
+  // Modal close wiring (id must exist in HTML)
+  document.getElementById("sm_close")?.addEventListener("click", () => closeSubmitModal());
+}
 
 export async function refreshState() {
   try {
-    const day  = await contract.day(); // 1 call
-    const [seed, bestS] = await Promise.all([
-      contract.seed(),                // 1 call
-      contract.bestOfDay(day),        // 1 call
-    ]);
+    const day   = await contract.day();
+    const seed  = await contract.seed();
+    const bestS = await contract.bestOfDay(day);
     seedHex = seed;
 
     setTextEventually("day",  day.toString());
@@ -85,10 +79,9 @@ export async function refreshState() {
 
     const leaderEl = $$("leader");
     if (leaderEl) {
-      const html = (bestS.player === ethers.ZeroAddress)
+      leaderEl.innerHTML = (bestS.player === ethers.ZeroAddress)
         ? "—"
         : `<a class="link" target="_blank" href="${EXPLORER_ADDR_PREFIX}${bestS.player}">${short(bestS.player)}</a> (FID ${bestS.fid}) @ ${bestS.bestHash}`;
-      leaderEl.innerHTML = html;
     }
 
     await refreshTodayIfDayChanged();
@@ -97,10 +90,16 @@ export async function refreshState() {
   }
 }
 
-// ---------- mining ----------
+// ---- Mining ----
 function randNonce() {
   const b = crypto.getRandomValues(new Uint8Array(32));
   return "0x" + [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+let nonceCounter = 1n;
+function nextNonceHex() {
+  const h = nonceCounter.toString(16).padStart(64, "0");
+  nonceCounter += 1n;
+  return "0x" + h;
 }
 
 export async function toggleMine() {
@@ -112,7 +111,7 @@ export async function toggleMine() {
 
 async function mineLoop() {
   const BATCH = 2048;
-  const fidHex = ethers.toBeHex(0, 32); // 32-byte FID = 0
+  const fidHex = ethers.toBeHex(0, 32); // we don’t know user FID until submit; hash definition allows 0 here client-side
 
   let localSeed = seedHex;
   let seedBytes = ethers.getBytes(localSeed);
@@ -171,138 +170,152 @@ export function updateRate() {
   }
 }
 
-// ---------- submit ----------
+// Extra mining telemetry
+let improves = 0;
+let lastImproveTs = null;
+function leadingZeroBits(hex32) {
+  const s = hex32.slice(2);
+  let bits = 0;
+  for (let i = 0; i < s.length; i++) {
+    const nib = parseInt(s[i], 16);
+    if (nib === 0) { bits += 4; continue; }
+    if (nib & 0x8) return bits + 0;
+    if (nib & 0x4) return bits + 1;
+    if (nib & 0x2) return bits + 2;
+    return bits + 3;
+  }
+  return 256;
+}
+function fmtSince(ts) {
+  if (!ts) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}m ${r}s`;
+}
+
+// ---- Submit path (TMF Passport only) ----
 const useRelayEl = $$("useRelay");
 export const useRelay = () => (useRelayEl ? useRelayEl.checked : true);
 
-export function friendlyError(e) {
-  const m = (e?.message || "").toLowerCase();
-  if (m.includes("gas_limit too high")) return "Relay cap hit: try again or submit directly.";
-  if (m.includes("quota"))              return "Out of free relay quota today.";
-  if (m.includes("passport"))           return "You need a TMF Passport to submit.";
-  if (m.includes("higher priority"))    return "Network busy — retrying…";
-  return e?.shortMessage || e?.message || String(e);
+async function ensureMonadTestnet() {
+  if (!window.ethereum) throw new Error("No wallet");
+  const prov = new ethers.BrowserProvider(window.ethereum, "any");
+  const net = await prov.getNetwork();
+  if (Number(net.chainId) === 10143) return;
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
+  } catch (err) {
+    if (err?.code === 4902) {
+      await window.ethereum.request({
+        method: "wallet_addEthereumChain",
+        params: [{
+          chainId: "0x279F",
+          chainName: "Monad Testnet",
+          rpcUrls: ["https://testnet-rpc.monad.xyz"],
+          nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+          blockExplorerUrls: ["https://testnet.monadexplorer.com/"]
+        }]
+      });
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
+    } else {
+      throw err;
+    }
+  }
 }
 
-// --- helpers used by preflight (throttled) ---
 async function getCooldownRemaining(addr) {
   try {
-    const day = await contract.day(); // 1 call
+    const d = await contract.day();
     const [cd, last] = await Promise.all([
-      contract.cooldownSeconds(),     // 1 call
-      contract.lastSubmitAt(day, addr) // 1 call
+      contract.cooldownSeconds(),
+      contract.lastSubmitAt(d, addr),
     ]);
     const now = Math.floor(Date.now() / 1000);
     const remain = Number(cd) - Math.max(0, now - Number(last));
     return remain > 0 ? remain : 0;
-  } catch (_) { return 0; }
+  } catch { return 0; }
 }
-async function isPaused() {
-  try { return await contract.paused(); } catch { return false; }
-}
-async function getFid(addr) {
-  try {
-    const passAddr = await contract.passport();
-    if (!passAddr || passAddr === ethers.ZeroAddress) return 0n;
-    const ipAbi = ["function fidOf(address) view returns (uint256)"];
-    const pass = new ethers.Contract(passAddr, ipAbi, readProvider);
-    const fid = await pass.fidOf(addr);
-    return BigInt(fid || 0);
-  } catch { return 0n; }
-}
+async function isPaused() { try { return await contract.paused(); } catch { return false; } }
 
-
-
-
-
-// ---------- passport (with 60s cache; report both NFT + FID) ----------
-const passportCache = new Map(); // addr -> { ts, hasNft, fid }
-
-async function getPassportContract() {
-  try {
-    const passAddr = await contract.passport();
-    if (!passAddr || passAddr === ethers.ZeroAddress) return null;
-    const abi = [
-      "function balanceOf(address) view returns (uint256)",
-      "function fidOf(address) view returns (uint256)"
-    ];
-    return new ethers.Contract(passAddr, abi, readProvider);
-  } catch { return null; }
-}
-
+// TMF Passport: combined status (NFT + FID)
 export async function getPassportStatus(addr) {
-  const key = addr?.toLowerCase?.();
-  const now = Date.now();
-  const cached = key ? passportCache.get(key) : null;
-  if (cached && (now - cached.ts) < 60_000) return cached;
-
-  const res = { ts: now, hasNft: false, fid: 0n };
   try {
-    const pass = await getPassportContract();
-    if (!pass) {
-      if (key) passportCache.set(key, res);
-      return res;
+    const passAddr = await contract.passport();
+    if (!passAddr || passAddr === ethers.ZeroAddress) {
+      return { hasNft: false, fid: 0n };
     }
+    const erc721Abi = ["function balanceOf(address) view returns (uint256)"];
+    const ipAbi     = ["function fidOf(address) view returns (uint256)"];
+    const pass721   = new ethers.Contract(passAddr, erc721Abi, readProvider);
+    const passCore  = new ethers.Contract(passAddr, ipAbi,     readProvider);
+
     const [bal, fid] = await Promise.all([
-      pass.balanceOf(addr).catch(()=>0n),
-      pass.fidOf(addr).catch(()=>0n),
+      pass721.balanceOf(addr).catch(()=>0n),
+      passCore.fidOf(addr).catch(()=>0n),
     ]);
-    res.hasNft = (bal && BigInt(bal) > 0n);
-    res.fid    = BigInt(fid || 0n);
-    if (key) passportCache.set(key, res);
-    return res;
+
+    return { hasNft: (BigInt(bal||0) > 0n), fid: BigInt(fid||0) };
   } catch {
-    if (key) passportCache.set(key, res);
-    return res;
+    return { hasNft: false, fid: 0n };
   }
 }
 
-// back-compat helpers (kept name so other code doesn’t break)
-export async function hasPassport(addr) {
-  const s = await getPassportStatus(addr);
-  return s.fid !== 0n; // gate by fid (not by NFT)
-}
-
-export function setPassportStatus(okOrObj) {
-  const el = $$("passportStatus"); if (!el) return;
-  const s = (typeof okOrObj === "object") ? okOrObj : { hasNft: !!okOrObj, fid: okOrObj ? 1n : 0n };
-  // UI shows both signals so users understand what’s wrong
-  if (s.fid !== 0n) {
-    el.innerHTML = `Passport: <span class="badge ok">Linked (FID ${s.fid})</span>`;
-  } else if (s.hasNft) {
-    el.innerHTML = `Passport: <span class="badge no">NFT only (no FID)</span>`;
+// Back-compat: allow boolean OR object
+export function setPassportStatus(x) {
+  const el = $$("passportStatus");
+  if (!el) return;
+  if (typeof x === "object" && x) {
+    if (x.hasNft && x.fid && x.fid !== 0n) {
+      el.innerHTML = `Passport: <span class="badge ok">Linked (FID ${String(x.fid)})</span>`;
+    } else if (x.hasNft) {
+      el.innerHTML = `Passport: <span class="badge no">NFT only (no FID)</span>`;
+    } else {
+      el.innerHTML = `Passport: <span class="badge no">Not found</span>`;
+    }
   } else {
-    el.innerHTML = `Passport: <span class="badge no">Not found</span>`;
+    el.innerHTML = x
+      ? `Passport: <span class="badge ok">Found</span>`
+      : `Passport: <span class="badge no">Not found</span>`;
   }
 }
 
+function decodeRpcErrorVerbose(e) {
+  const raw = e?.data?.message || e?.info?.error?.message || e?.shortMessage || e?.message || String(e);
+  const m = raw.toLowerCase();
+  if (m.includes("gas_limit too high"))  return "Relay cap hit: try again or submit directly. (" + raw + ")";
+  if (m.includes("quota"))               return "Out of free relay quota today. (" + raw + ")";
+  if (m.includes("passport"))            return "You need a TMF Passport to submit. (" + raw + ")";
+  if (m.includes("higher priority"))     return "Network busy — retrying… (" + raw + ")";
+  if (m.includes("user rejected"))       return "Transaction rejected in wallet.";
+  if (m.includes("insufficient funds"))  return "Not enough MON for gas.";
+  if (m.includes("execution reverted"))  return "Reverted by contract (cooldown/passport/paused). (" + raw + ")";
+  return raw;
+}
 
-
-
-
-// --- submit path --------------------------------------------------------------
 async function preflightSubmit(addr) {
   log("preflight: begin", { addr });
 
-  // 1) network (cached)
-  const id = await ensureNetwork();
-  log("preflight: network", id);
-  if (id !== 10143) throw new Error("Please switch to Monad Testnet (10143).");
+  // 1) network
+  try { await ensureMonadTestnet(); }
+  catch { throw new Error("Wallet is not on Monad Testnet (10143)."); }
+  const prov = new ethers.BrowserProvider(window.ethereum, "any");
+  const net = await prov.getNetwork();
+  log("preflight: network", Number(net.chainId));
 
-  // 2) paused
+  // 2) paused?
   const paused = await isPaused();
   log("preflight: paused?", paused);
   if (paused) throw new Error("Game is currently paused.");
 
-  // 3) passport status
+  // 3) TMF Passport status
   const ps = await getPassportStatus(addr);
-  log("preflight: passport?", { hasNft: ps.hasNft, fid: String(ps.fid) });
-  setPassportStatus(ps); // keep UI consistent
+  log("preflight: passport?", ps);
+  if (!ps.hasNft) {
+    throw new Error("TMF Passport not found for this wallet. Please mint on the TMF Passport page with this wallet.");
+  }
   if (ps.fid === 0n) {
-    const hint = ps.hasNft
-      ? "Your wallet holds the Passport NFT but it isn’t linked to a Farcaster ID (fid=0). Re-link or mint via Monad Games ID."
-      : "Passport not found — mint a TMF Passport first.";
-    throw new Error(hint);
+    throw new Error("Your wallet holds the TMF Passport NFT but it isn’t linked to your Farcaster ID (fid=0). Open the TMF Passport page and link this wallet.");
   }
 
   // 4) cooldown
@@ -313,13 +326,16 @@ async function preflightSubmit(addr) {
   log("preflight: ok");
 }
 
-
 export async function submitBest() {
   const txMsg = document.getElementById("txMsg");
   const put = (t) => { if (txMsg) txMsg.textContent = t; };
 
-  if (!signer) await connect();
-  if (!best.nonce) { put("Mine first to get a nonce."); return; }
+  if (!signer) {
+    openSubmitModal("Connect first", "Please connect your wallet before submitting.");
+    put("Connect wallet first.");
+    return;
+  }
+  if (!best.nonce) { openSubmitModal("No best yet", "Mine first to get a nonce."); put("Mine first to get a nonce."); return; }
 
   openSubmitModal("Submitting…", "Running preflight checks…");
 
@@ -335,7 +351,7 @@ export async function submitBest() {
 
   try {
     if (useRelay()) {
-      // ⚠️ Skip simulation for relay (msg.sender differs under 2771)
+      // Relay path (do not simulate — forwarder changes sender)
       put("Relaying (gasless)…");
       updateSubmitModal("Sending through TMF relay…");
 
@@ -346,7 +362,7 @@ export async function submitBest() {
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data, gasLimit);
 
-      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${txHash.slice(0,6)}…${txHash.slice(-4)}</a>`;
+      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
       updateSubmitModal("Relay accepted — waiting for confirmation…", link);
 
       const rec = await readProvider.waitForTransaction(txHash);
@@ -360,7 +376,7 @@ export async function submitBest() {
         updateSubmitModal(`Tx failed. ${detail}`, link);
       }
     } else {
-      // Direct wallet path — safe to simulate
+      // Direct path (simulate first)
       put("Submitting tx…");
       updateSubmitModal("Simulating then broadcasting from your wallet…");
 
@@ -381,7 +397,7 @@ export async function submitBest() {
       log("submit: direct gas estimate", { gas: String(gas), gasLimit });
 
       const tx  = await writeContract.submit(best.nonce, { gasLimit });
-      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${tx.hash.slice(0,6)}…${tx.hash.slice(-4)}</a>`;
+      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
       updateSubmitModal("Broadcasted — waiting for confirmation…", link);
 
       const rec = await tx.wait();
@@ -405,7 +421,7 @@ export async function submitBest() {
   }
 }
 
-// Relay with jittered retry
+// Relay helper with logs + jittered retry
 export async function submitViaRelay(calldata, gasLimit = 300000) {
   const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: gasLimit };
   log("relay: POST", RELAY_ENDPOINT, body);
@@ -449,80 +465,67 @@ export async function submitViaRelay(calldata, gasLimit = 300000) {
   }
 }
 
+// Explain failure via receipt
+async function explainTxFailure(txHash, extra = "") {
+  try {
+    const r = await readProvider.getTransactionReceipt(txHash);
+    if (!r) return `No receipt yet for ${txHash}. ${extra}`.trim();
 
-// expose writer wiring for UI module
-export async function wireWriterWith(s) {
-  signer   = s.signer;
-  provider = s.provider;
-  account  = s.account;
-  cachedChainId = null; // reset network cache on rewire
-  const abi = await loadAbi();
-  writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
-}
-
-// Extra mining telemetry
-let improves = 0;
-let lastImproveTs = null;
-
-// Count leading zero bits of a 0x…32-byte hex
-function leadingZeroBits(hex32) {
-  const s = hex32.slice(2);
-  let bits = 0;
-  for (let i = 0; i < s.length; i++) {
-    const nib = parseInt(s[i], 16);
-    if (nib === 0) { bits += 4; continue; }
-    if (nib & 0x8) return bits + 0;
-    if (nib & 0x4) return bits + 1;
-    if (nib & 0x2) return bits + 2;
-    return bits + 3;
+    const lines = [];
+    lines.push(`status=${r.status === 1 ? "success" : "failed"}`);
+    lines.push(`block=${r.blockNumber}`);
+    lines.push(`gasUsed=${r.gasUsed?.toString?.() ?? r.gasUsed}`);
+    if (r.from) lines.push(`from=${r.from}`);
+    if (r.to)   lines.push(`to=${r.to}`);
+    if (r.logs && r.logs.length) {
+      const hadSubmitted = r.logs.some(log => log.address.toLowerCase() === MONOMINE_ADDRESS.toLowerCase());
+      lines.push(`logs=${r.logs.length}${hadSubmitted ? " (Submitted seen)" : ""}`);
+    }
+    if (extra) lines.push(extra);
+    const msg = lines.join(" • ");
+    log("receipt detail:", msg, r);
+    return msg;
+  } catch (e) {
+    log("receipt fetch failed:", e);
+    return `Failed to fetch receipt: ${e?.message || e}`;
   }
-  return 256;
-}
-function fmtSince(ts) {
-  if (!ts) return "—";
-  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60), r = s % 60;
-  return `${m}m ${r}s`;
-}
-let nonceCounter = 1n;
-function nextNonceHex() {
-  const h = nonceCounter.toString(16).padStart(64, "0");
-  nonceCounter += 1n;
-  return "0x" + h;
-}
-function reseedNonceCounter() {
-  const b = crypto.getRandomValues(new Uint8Array(8));
-  let seed = 0n;
-  for (let i = 0; i < 8; i++) seed = (seed << 8n) | BigInt(b[i]);
-  if (seed === 0n) seed = 1n;
-  nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
 }
 
-// ===== Today Leaderboard (polling; RPC friendly) =====
-const TOP_N = 50; // huge 🙂
+// ---- TMF Passport (legacy helper) ----
+export async function hasPassport(addr) {
+  // kept for imports elsewhere; note this checks NFT only
+  try {
+    const passAddr = await contract.passport();
+    if (!passAddr || passAddr === ethers.ZeroAddress) return false;
+    const erc721Abi = ["function balanceOf(address) view returns (uint256)"];
+    const pass = new ethers.Contract(passAddr, erc721Abi, readProvider);
+    const bal  = await pass.balanceOf(addr);
+    return (bal && BigInt(bal) > 0n);
+  } catch {
+    return false;
+  }
+}
 
+// ---- Leaderboard: Today (polling) ----
+const TOP_N = 50;
 let lb = {
   day: null,
   rows: new Map(),     // addr -> { addr, fid, bestHashBig, bestHash, submits, at }
   unsub: null,         // clearInterval handle
   renderPending: false,
-  lastScanned: 0,      // last block we processed
+  lastScanned: 0,
 };
-
 function big(h){ try { return BigInt(h); } catch { return (1n<<256n)-1n; } }
 function shortAddr(a){ return a ? a.slice(0,6)+"…"+a.slice(-4) : "—"; }
 function ago(ts){
   const s = Math.max(0, Math.floor(Date.now()/1000 - Number(ts)));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s/60); if (m < 60) return `${m}m`;
+  if (s < 60) return `${s}s`; const m = Math.floor(s/60); if (m < 60) return `${m}m`;
   const h = Math.floor(m/60); return `${h}h`;
 }
 
 export async function initTodayLeaderboard() {
   lb.rows.clear();
-  const curDay = await contract.day();
-  lb.day = Number(curDay);
+  lb.day = Number(await contract.day());
   await backfillToday(lb.day);
   startTodayPolling(lb.day);
   renderToday();
@@ -531,13 +534,12 @@ export async function initTodayLeaderboard() {
 async function backfillToday(dayNum) {
   try {
     const latest = await readProvider.getBlockNumber();
-
     const MAX_LOOKBACK = 800;
     const CHUNK        = 100;
     const fromStart    = Math.max(0, latest - MAX_LOOKBACK);
 
-    const topic0 = submittedTopic();
-    const topic1 = dayTopic(dayNum);
+    const topic0 = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
+    const topic1 = ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
 
     for (let from = fromStart; from <= latest; from += CHUNK) {
       const to = Math.min(latest, from + CHUNK - 1);
@@ -547,11 +549,10 @@ async function backfillToday(dayNum) {
         toBlock: to,
         topics: [topic0, topic1],
       });
-
       for (const log of logs) {
         const parsed = contract.interface.parseLog(log);
         const { player, fid, h, at } = parsed.args;
-        upsertRow(player, fid, h, at, /*triggerRender*/ false);
+        upsertRow(player, fid, h, at, false);
       }
     }
     lb.lastScanned = latest;
@@ -563,11 +564,10 @@ async function backfillToday(dayNum) {
 
 function startTodayPolling(dayNum) {
   stopTodayStream();
-
-  const POLL_MS = 10_000;
+  const POLL_MS = 10000;
   const CHUNK   = 100;
-  const topic0  = submittedTopic();
-  const topic1  = dayTopic(dayNum);
+  const topic0  = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
+  const topic1  = ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
 
   const tick = async () => {
     try {
@@ -583,33 +583,26 @@ function startTodayPolling(dayNum) {
           toBlock: to,
           topics: [topic0, topic1],
         });
-
         for (const log of logs) {
           try {
             const parsed = contract.interface.parseLog(log);
             const { player, fid, h, at } = parsed.args;
-            upsertRow(player, fid, h, at, /*triggerRender*/ true);
+            upsertRow(player, fid, h, at, true);
           } catch (e) {
             console.warn("poll parse failed:", e);
           }
         }
-
         lb.lastScanned = to;
         from = to + 1;
       }
-    } catch (e) {
-      // swallow transient RPC hiccups
-    }
+    } catch {}
   };
 
   tick();
   const id = setInterval(tick, POLL_MS);
   lb.unsub = () => clearInterval(id);
 }
-
-function stopTodayStream() {
-  if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
-}
+function stopTodayStream() { if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; } }
 
 function upsertRow(player, fid, hash32, at, triggerRender) {
   const key = player.toLowerCase();
@@ -627,13 +620,11 @@ function upsertRow(player, fid, hash32, at, triggerRender) {
   }
   if (triggerRender) scheduleRender();
 }
-
 function scheduleRender() {
   if (lb.renderPending) return;
   lb.renderPending = true;
   requestAnimationFrame(() => { lb.renderPending = false; renderToday(); });
 }
-
 function renderToday() {
   const body = document.getElementById("todayTbody");
   const meta = document.getElementById("lbMeta");
@@ -659,7 +650,6 @@ function renderToday() {
 
   if (meta) meta.textContent = `day ${lb.day} • top ${Math.min(rows.length, TOP_N)}`;
 }
-
 export async function refreshTodayIfDayChanged() {
   try {
     const d = Number(await contract.day());
@@ -670,11 +660,7 @@ export async function refreshTodayIfDayChanged() {
   } catch {}
 }
 
-const SUBMITTED_SIG = "Submitted(uint256,address,uint256,bytes32,uint256)";
-function submittedTopic() { return ethers.id(SUBMITTED_SIG); }
-function dayTopic(dayNum)  { return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32); }
-
-// ---------- submit modal helpers ----------
+// ---- Submit Modal (ARIA fix) ----
 function openSubmitModal(title = "Submitting…", body = "Preparing transaction…") {
   const m = document.getElementById("submitModal");
   if (!m) return;
@@ -682,7 +668,7 @@ function openSubmitModal(title = "Submitting…", body = "Preparing transaction�
   document.getElementById("sm_body").textContent  = body;
   document.getElementById("sm_link").innerHTML    = "";
   m.hidden = false;
-  m.removeAttribute("aria-hidden"); // avoid aria-hidden on focused subtree
+  m.removeAttribute("aria-hidden");
   m.querySelector(".modal__card")?.focus();
 }
 function updateSubmitModal(body, linkHtml) {
@@ -696,60 +682,15 @@ function updateSubmitModal(body, linkHtml) {
 function closeSubmitModal() {
   const m = document.getElementById("submitModal");
   if (!m) return;
+  (document.activeElement)?.blur();  // prevent aria-hidden on focused subtree
   m.setAttribute("aria-hidden", "true");
   m.hidden = true;
 }
 
-// Explain a failure with concrete details
-async function explainTxFailure(txHash, extra = "") {
-  try {
-    const r = await readProvider.getTransactionReceipt(txHash);
-    if (!r) return `No receipt yet for ${txHash}. ${extra}`.trim();
-
-    const lines = [];
-    lines.push(`status=${r.status === 1 ? "success" : "failed"}`);
-    lines.push(`block=${r.blockNumber}`);
-    lines.push(`gasUsed=${r.gasUsed?.toString?.() ?? r.gasUsed}`);
-    if (r.from) lines.push(`from=${r.from}`);
-    if (r.to)   lines.push(`to=${r.to}`);
-    if (r.logs && r.logs.length) {
-      const hadSubmitted = r.logs.some(log => log.address.toLowerCase() === MONOMINE_ADDRESS.toLowerCase());
-      lines.push(`logs=${r.logs.length}${hadSubmitted ? " (Submitted seen)" : ""}`);
-    }
-    if (extra) lines.push(extra);
-
-    const msg = lines.join(" • ");
-    log("receipt detail:", msg, r);
-    return msg;
-  } catch (e) {
-    log("receipt fetch failed:", e);
-    return `Failed to fetch receipt: ${e?.message || e}`;
-  }
-}
-
-function decodeRpcErrorVerbose(e) {
-  const basic =
-    (e?.shortMessage) ||
-    (e?.info?.error?.message) ||
-    (e?.data?.message) ||
-    (e?.message) ||
-    String(e);
-
-  const m = (basic || "").toLowerCase();
-  if (m.includes("gas_limit too high"))  return "Relay cap hit: try again or submit directly. (" + basic + ")";
-  if (m.includes("quota"))               return "Out of free relay quota today. (" + basic + ")";
-  if (m.includes("passport"))            return "You need a TMF Passport to submit. (" + basic + ")";
-  if (m.includes("higher priority"))     return "Network busy — retrying… (" + basic + ")";
-  if (m.includes("user rejected"))       return "Transaction rejected in wallet.";
-  if (m.includes("insufficient funds"))  return "Not enough MON for gas.";
-  if (m.includes("execution reverted"))  return "Reverted by contract (cooldown/passport/paused). (" + basic + ")";
-  return basic;
-}
-
-// Handy one-click probe (call from console if needed)
+// ---- Env probe ----
 export async function debugEnvProbe() {
   try {
-    const [cid, pf, rm, cd, es, paused] = await Promise.all([
+    const [cid, pf, rm, cd, es, pz] = await Promise.all([
       readProvider.getNetwork().then(n => n.chainId).catch(()=>null),
       contract.trustedForwarder?.().catch(()=>null),
       contract.relayManager?.().catch(()=>null),
@@ -758,7 +699,15 @@ export async function debugEnvProbe() {
       contract.paused?.().catch(()=>null),
     ]);
     const passAddr = await contract.passport().catch(()=>null);
-    log("env probe:", { chainId: cid, trustedForwarder: pf, relayManager: rm, passport: passAddr, cooldown: String(cd), epochSeconds: String(es), paused });
+    log("env probe:", {
+      chainId: cid,
+      trustedForwarder: pf,
+      relayManager: rm,
+      passport: passAddr,
+      cooldown: String(cd),
+      epochSeconds: String(es),
+      paused: pz
+    });
   } catch (e) {
     log("env probe failed:", e);
   }
