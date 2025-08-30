@@ -203,7 +203,6 @@ async function isPaused() {
   try { return await contract.paused(); } catch { return false; }
 }
 
-function shortHash(h) { return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
 
 
 // --- submit path --------------------------------------------------------------
