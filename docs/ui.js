@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.6 loaded");
+  console.log("MonoMine v13.7 loaded");
   await initGame();
   await debugEnvProbe();
 
@@ -224,8 +224,8 @@ setPassportStatus(ps);
   if (connectBtn) connectBtn.disabled = connected;
   if (addNetBtn)  addNetBtn.disabled  = !connected || onMonad;
   if (mintBtn) {
-    mintBtn.disabled    = passOk;
-    mintBtn.textContent = passOk ? "Passport Minted" : "Mint Passport";
+    mintBtn.disabled    = ps;
+    mintBtn.textContent = ps ? "Passport Minted" : "Mint Passport";
   }
 
   // explorer link
