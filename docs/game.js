@@ -20,6 +20,10 @@ export let lastTick = Date.now();
 import { ethers } from "https://esm.sh/ethers@6.13.2";
 
 
+function log(...args){ console.log("[MonoMine]", ...args); }
+function shortHash(h){ return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
+
+
 export async function loadAbi() {
   const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
   return j.abi || j;
@@ -201,47 +205,30 @@ async function isPaused() {
 
 function shortHash(h) { return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
 
-function decodeRpcError(e) {
-  const raw = e?.data?.message || e?.shortMessage || e?.message || String(e);
-  const m = raw.toLowerCase();
-  if (m.includes("another transaction has higher priority")) return "Network busy: another tx has priority. Try again.";
-  if (m.includes("user rejected")) return "Transaction rejected in wallet.";
-  if (m.includes("nonce too low")) return "Wallet nonce too low; wait a moment and retry.";
-  if (m.includes("insufficient funds")) return "Not enough MON for gas.";
-  if (m.includes("execution reverted")) return "Reverted by contract (cooldown/passport/paused).";
-  return raw;
-}
 
 // --- submit path --------------------------------------------------------------
 
 async function preflightSubmit(addr) {
+  log("preflight: begin", { addr });
+
   // 1) chain check
   try {
     if (!provider) throw new Error("No provider");
     const net = await provider.getNetwork();
+    log("preflight: network", net?.chainId);
     if (Number(net.chainId) !== 10143) {
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x279F" }], // Monad testnet
+          params: [{ chainId: "0x279F" }],
         });
       } catch (err) {
         if (err?.code === 4902) {
-        await window.ethereum.request({
-            method: "wallet_addEthereumChain",
-            params: [{
-            chainId: "0x279F",
-            chainName: "Monad Testnet",
-            rpcUrls: ["https://testnet-rpc.monad.xyz"],
-            nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
-            blockExplorerUrls: ["https://testnet.monadexplorer.com/"]
-            }]
-        });
-        await window.ethereum.request({
+          await addMonadNetwork();
+          await window.ethereum.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: "0x279F" }],
-        });
-        
+          });
         } else {
           throw new Error("Please switch to Monad Testnet (10143).");
         }
@@ -252,21 +239,21 @@ async function preflightSubmit(addr) {
   }
 
   // 2) app/contract state
-  if (await isPaused()) {
-    throw new Error("Game is currently paused.");
-  }
+  const paused = await isPaused();
+  log("preflight: paused?", paused);
+  if (paused) throw new Error("Game is currently paused.");
 
   // 3) passport
   const has = await hasPassport(addr);
-  if (!has) {
-    throw new Error("Passport not found — mint a TMF Passport first.");
-  }
+  log("preflight: passport?", has);
+  if (!has) throw new Error("Passport not found — mint a TMF Passport first.");
 
   // 4) cooldown
   const left = await getCooldownRemaining(addr);
-  if (left > 0) {
-    throw new Error(`Cooldown active: wait ${left}s.`);
-  }
+  log("preflight: cooldown left (s)", left);
+  if (left > 0) throw new Error(`Cooldown active: wait ${left}s.`);
+
+  log("preflight: ok");
 }
 
 export async function submitBest() {
@@ -276,87 +263,98 @@ export async function submitBest() {
   if (!signer) await connect();
   if (!best.nonce) { put("Mine first to get a nonce."); return; }
 
-  // Modal: start
+  // Modal up + aria fix
   openSubmitModal("Submitting…", "Running preflight checks…");
 
   try {
     await preflightSubmit(account);
   } catch (why) {
-    const msg = String(why.message || why);
+    const msg = String(why?.message || why);
+    log("submit: preflight failed:", msg);
     put(msg);
     updateSubmitModal(msg);
-    return; // keep modal open so they can read
+    return; // keep modal open so user can read
+  }
+
+  // Try simulating the call locally to catch reverts early (works for both paths)
+  try {
+    log("submit: staticCall simulation start", { nonce: best.nonce });
+    await writeContract.submit.staticCall(best.nonce);
+    log("submit: staticCall simulation ok");
+  } catch (e) {
+    const msg = decodeRpcErrorVerbose(e);
+    log("submit: staticCall simulation revert:", e);
+    put(msg);
+    updateSubmitModal(`Simulation reverted: ${msg}`);
+    return;
   }
 
   try {
     if (useRelay()) {
-      put("Relaying (gasless)...");
+      put("Relaying (gasless)…");
       updateSubmitModal("Sending through TMF relay…");
 
-      const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
-      const { txHash } = await submitViaRelay(data);
+      // Estimate + cushion to avoid relay cap/OOG
+      const gasEst = await writeContract.submit.estimateGas(best.nonce).catch(()=>null);
+      const gasLimit = gasEst ? Math.ceil(Number(gasEst) * 1.25) : 300000; // fallback = old cap
+      log("submit: relay gas estimate", { gasEst: String(gasEst||"n/a"), gasLimit });
 
-      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${txHash.slice(0,6)}…${txHash.slice(-4)}</a>`;
-      updateSubmitModal("Relay accepted — waiting for confirmation…", link);
+      const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
+      const { txHash } = await submitViaRelay(data, gasLimit);
+
+      const linkHtml = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
+      updateSubmitModal("Relay accepted — waiting for confirmation…", linkHtml);
+      log("submit: relay accepted", txHash);
 
       const rec = await readProvider.waitForTransaction(txHash);
+      log("submit: relay receipt", rec);
       if (rec && rec.status === 1) {
-        const okMsg = `Confirmed in block ${rec.blockNumber}`;
         put(`Confirmed: ${txHash}`);
-        updateSubmitModal(okMsg, link);
+        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, linkHtml);
       } else {
         const detail = await explainTxFailure(txHash, "Relay path");
-        const fail = `Tx failed`;
-        put(`${fail}: ${txHash}`);
-        updateSubmitModal(`${fail}. ${detail}`, link);
+        put(`Tx failed: ${txHash}`);
+        updateSubmitModal(`Tx failed. ${detail}`, linkHtml);
       }
     } else {
       put("Submitting tx…");
       updateSubmitModal("Submitting directly from your wallet…");
 
-    try {
-        await writeContract.submit.staticCall(best.nonce);
-        } catch (e) {
-        const msg = decodeRpcErrorVerbose(e);
-        put(msg);
-        updateSubmitModal(`Simulation reverted: ${msg}`);
-        return;
-}
-
-
-      // Concrete estimate to surface revert reasons early
       const gas = await writeContract.submit.estimateGas(best.nonce);
-      const tx  = await writeContract.submit(best.nonce, { gasLimit: gas });
+      const gasLimit = Math.ceil(Number(gas) * 1.15);
+      log("submit: direct gas estimate", { gas: String(gas), gasLimit });
 
-      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${tx.hash.slice(0,6)}…${tx.hash.slice(-4)}</a>`;
-      updateSubmitModal("Broadcasted — waiting for confirmation…", link);
+      const tx  = await writeContract.submit(best.nonce, { gasLimit });
+      const linkHtml = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
+      updateSubmitModal("Broadcasted — waiting for confirmation…", linkHtml);
 
       const rec = await tx.wait();
+      log("submit: direct receipt", rec);
       if (rec && rec.status === 1) {
-        const okMsg = `Confirmed in block ${rec.blockNumber}`;
         put(`Submitted: ${tx.hash}`);
-        updateSubmitModal(okMsg, link);
+        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, linkHtml);
       } else {
         const detail = await explainTxFailure(tx.hash, "Direct path");
-        const fail = `Tx failed`;
-        put(`${fail}: ${tx.hash}`);
-        updateSubmitModal(`${fail}. ${detail}`, link);
+        put(`Tx failed: ${tx.hash}`);
+        updateSubmitModal(`Tx failed. ${detail}`, linkHtml);
       }
     }
 
     await refreshState();
   } catch (e) {
-    console.error("submitBest error:", e);
     const msg = decodeRpcErrorVerbose(e);
+    log("submit: error", e);
     put(msg);
     updateSubmitModal(msg);
   }
 }
 
 
-// Keep the jittered retry for the prioritization edge-case you saw (502/-32603).
-export async function submitViaRelay(calldata) {
-  const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: 300000 };
+
+// Keep the jittered retry for the prioritization 
+export async function submitViaRelay(calldata, gasLimit = 300000) {
+  const body = { target: MONOMINE_ADDRESS, data: calldata, gas_limit: gasLimit };
+  log("relay: POST", RELAY_ENDPOINT, body);
 
   const tryOnce = async () => {
     const res  = await fetch(RELAY_ENDPOINT, {
@@ -366,6 +364,7 @@ export async function submitViaRelay(calldata) {
     });
 
     const text = await res.text();
+    log("relay: raw response", res.status, text);
 
     if (res.ok) {
       let json; try { json = JSON.parse(text); } catch { json = {}; }
@@ -389,6 +388,7 @@ export async function submitViaRelay(calldata) {
     catch (err) {
       const msg = (err?.message || "").toLowerCase();
       const isPriority = msg.includes("higher priority");
+      log("relay: attempt failed", i, err);
       if (!isPriority || i === retries) throw err;
       await new Promise(r => setTimeout(r, 150 + Math.floor(Math.random() * 300)));
     }
@@ -670,7 +670,11 @@ function openSubmitModal(title = "Submitting…", body = "Preparing transaction�
   document.getElementById("sm_body").textContent  = body;
   document.getElementById("sm_link").innerHTML    = "";
   m.hidden = false;
+  m.removeAttribute("aria-hidden"); // FIX: avoid aria-hidden on focused subtree
+  // focus the card
+  m.querySelector(".modal__card")?.focus();
 }
+
 function updateSubmitModal(body, linkHtml) {
   const b = document.getElementById("sm_body");
   if (b) b.textContent = body;
@@ -679,9 +683,12 @@ function updateSubmitModal(body, linkHtml) {
     if (l) l.innerHTML = linkHtml;
   }
 }
+
 function closeSubmitModal() {
   const m = document.getElementById("submitModal");
-  if (m) m.hidden = true;
+  if (!m) return;
+  m.setAttribute("aria-hidden", "true");
+  m.hidden = true;
 }
 
 // Explain a failure with concrete details
@@ -697,25 +704,53 @@ async function explainTxFailure(txHash, extra = "") {
     if (r.from) lines.push(`from=${r.from}`);
     if (r.to)   lines.push(`to=${r.to}`);
     if (r.logs && r.logs.length) {
-      // Did we emit Submitted?
       const hadSubmitted = r.logs.some(log => log.address.toLowerCase() === MONOMINE_ADDRESS.toLowerCase());
       lines.push(`logs=${r.logs.length}${hadSubmitted ? " (Submitted seen)" : ""}`);
     }
     if (extra) lines.push(extra);
 
-    return lines.join(" • ");
+    const msg = lines.join(" • ");
+    log("receipt detail:", msg, r);
+    return msg;
   } catch (e) {
+    log("receipt fetch failed:", e);
     return `Failed to fetch receipt: ${e?.message || e}`;
   }
 }
 
-// Best-effort revert decoding for thrown errors
 function decodeRpcErrorVerbose(e) {
-  // Keep your friendly mapping first:
-  const basic = decodeRpcError(e);
-  // Then append raw low-level detail if present:
-  const raw = e?.data?.message || e?.info?.error?.message || e?.shortMessage || e?.message;
-  if (!raw) return basic;
-  if (basic && raw && !basic.includes(raw)) return `${basic} (${raw})`;
-  return basic || raw;
+  const basic =
+    (e?.shortMessage) ||
+    (e?.info?.error?.message) ||
+    (e?.data?.message) ||
+    (e?.message) ||
+    String(e);
+
+  const m = basic.toLowerCase();
+  if (m.includes("gas_limit too high"))  return "Relay cap hit: try again or submit directly. (" + basic + ")";
+  if (m.includes("quota"))               return "Out of free relay quota today. (" + basic + ")";
+  if (m.includes("passport"))            return "You need a TMF Passport to submit. (" + basic + ")";
+  if (m.includes("higher priority"))     return "Network busy — retrying… (" + basic + ")";
+  if (m.includes("user rejected"))       return "Transaction rejected in wallet.";
+  if (m.includes("insufficient funds"))  return "Not enough MON for gas.";
+  if (m.includes("execution reverted"))  return "Reverted by contract (cooldown/passport/paused). (" + basic + ")";
+
+  return basic;
+}
+
+export async function debugEnvProbe() {
+  try {
+    const [cid, pf, rm, cd, es, paused] = await Promise.all([
+      readProvider.getNetwork().then(n => n.chainId).catch(()=>null),
+      contract.trustedForwarder?.().catch(()=>null),
+      contract.relayManager?.().catch(()=>null),
+      contract.cooldownSeconds?.().catch(()=>null),
+      contract.epochSeconds?.().catch(()=>null),
+      contract.paused?.().catch(()=>null),
+    ]);
+    const passAddr = await contract.passport().catch(()=>null);
+    log("env probe:", { chainId: cid, trustedForwarder: pf, relayManager: rm, passport: passAddr, cooldown: String(cd), epochSeconds: String(es), paused });
+  } catch (e) {
+    log("env probe failed:", e);
+  }
 }
