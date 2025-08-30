@@ -147,6 +147,8 @@ async function mineLoop() {
 }
 
 
+
+
 export function updateRate() {
   const el = $$("rate");
   if (!el) return;
@@ -430,9 +432,10 @@ const TOP_N = 50; // 50 is HUGE :)
 
 let lb = {
   day: null,
-  rows: new Map(),   // key: addr -> { addr, fid, bestHashBig, bestHash, submits, at }
-  unsub: null,
+  rows: new Map(),     // addr -> { addr, fid, bestHashBig, bestHash, submits, at }
+  unsub: null,         // will be a clearInterval
   renderPending: false,
+  lastScanned: 0,      // last block we processed
 };
 
 function big(h){ try { return BigInt(h); } catch { return (1n<<256n)-1n; } }
@@ -445,22 +448,26 @@ function ago(ts){
 
 export async function initTodayLeaderboard() {
   lb.rows.clear();
-  lb.day = Number(await contract.day());
+
+  const curDay = await contract.day();
+  lb.day = Number(curDay);
+
   await backfillToday(lb.day);
-  startTodayStream(lb.day);
+  startTodayPolling(lb.day);   // <-- polling, not provider.on
   renderToday();
 }
+
 
 async function backfillToday(dayNum) {
   try {
     const latest = await readProvider.getBlockNumber();
 
-    // Keep it modest to avoid hammering the RPC. Adjust if you want more history.
-    const MAX_LOOKBACK = 800;      // total blocks to scan
-    const CHUNK        = 100;      // RPC hard limit per call
+    // scan only a modest window to keep things cheap + within limits
+    const MAX_LOOKBACK = 800;     // total blocks
+    const CHUNK        = 100;     // RPC hard limit per call
     const fromStart    = Math.max(0, latest - MAX_LOOKBACK);
 
-    const topic0 = SUBMITTED_TOPIC;
+    const topic0 = submittedTopic();
     const topic1 = dayTopic(dayNum);
 
     for (let from = fromStart; from <= latest; from += CHUNK) {
@@ -469,46 +476,74 @@ async function backfillToday(dayNum) {
         address: MONOMINE_ADDRESS,
         fromBlock: from,
         toBlock: to,
-        topics: [topic0, topic1], // only events with this day indexed
+        topics: [topic0, topic1],
       });
 
       for (const log of logs) {
-        // Parse using the ABI to get named args
         const parsed = contract.interface.parseLog(log);
-        // Submitted(uint256 day, address player, uint256 fid, bytes32 h, uint256 at)
         const { player, fid, h, at } = parsed.args;
-        upsertRow(player, fid, h, at, /*isEvent*/ false);
+        upsertRow(player, fid, h, at, /*triggerRender*/ false);
       }
     }
+
+    lb.lastScanned = latest; // start polling from here
   } catch (e) {
     console.warn("backfillToday failed:", e);
+    // if we failed, at least initialize lastScanned so polling can recover
+    try { lb.lastScanned = await readProvider.getBlockNumber(); } catch {}
   }
 }
 
-async function startTodayStream(dayNum) {
-  stopTodayStream();
+function startTodayPolling(dayNum) {
+  stopTodayStream(); // clear any prior interval
 
-  try {
-    const filter = {
-      address: MONOMINE_ADDRESS,
-      topics: [SUBMITTED_TOPIC, dayTopic(dayNum)],
-    };
+  const POLL_MS = 3000;
+  const CHUNK   = 100;
+  const topic0  = submittedTopic();
+  const topic1  = dayTopic(dayNum);
 
-    const listener = (log) => {
-      try {
-        const parsed = contract.interface.parseLog(log);
-        const { player, fid, h, at } = parsed.args;
-        upsertRow(player, fid, h, at, /*isEvent*/ true);
-      } catch (e) {
-        console.warn("stream parse failed:", e);
+  const tick = async () => {
+    try {
+      const latest = await readProvider.getBlockNumber();
+      let from = Math.min(lb.lastScanned + 1, latest);
+      if (from > latest) return; // nothing new
+
+      while (from <= latest) {
+        const to = Math.min(latest, from + CHUNK - 1);
+        const logs = await readProvider.getLogs({
+          address: MONOMINE_ADDRESS,
+          fromBlock: from,
+          toBlock: to,
+          topics: [topic0, topic1],
+        });
+
+        for (const log of logs) {
+          try {
+            const parsed = contract.interface.parseLog(log);
+            const { player, fid, h, at } = parsed.args;
+            upsertRow(player, fid, h, at, /*triggerRender*/ true);
+          } catch (e) {
+            console.warn("poll parse failed:", e);
+          }
+        }
+
+        lb.lastScanned = to;
+        from = to + 1;
       }
-    };
+    } catch (e) {
+      // keep calm and poll on
+      // console.warn("poll error:", e);
+    }
+  };
 
-    readProvider.on(filter, listener);
-    lb.unsub = () => readProvider.off(filter, listener);
-  } catch (e) {
-    console.warn("startTodayStream failed:", e);
-  }
+  // kick once immediately; then interval
+  tick();
+  const id = setInterval(tick, POLL_MS);
+  lb.unsub = () => clearInterval(id);
+}
+
+function stopTodayStream() {
+  if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
 }
 
 function stopTodayStream() {
@@ -577,7 +612,12 @@ export async function refreshTodayIfDayChanged() {
 // Event signature + topics
 const SUBMITTED_TOPIC = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
 
+
+
+function submittedTopic() {
+  // safe after contract is constructed
+  return contract.interface.getEventTopic("Submitted");
+}
 function dayTopic(dayNum) {
-  // indexed uint256 topic (zero-padded)
   return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
 }
