@@ -17,6 +17,9 @@ export let best = { hash: null, nonce: null, value: 2n ** 256n - 1n };
 export let hashes = 0;
 export let lastTick = Date.now();
 
+import { ethers } from "https://esm.sh/ethers@6.13.2";
+
+
 export async function loadAbi() {
   const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
   return j.abi || j;
@@ -502,7 +505,7 @@ async function startTodayStream(dayNum) {
     };
 
     readProvider.on(filter, listener);
-    lbState.unsub = () => readProvider.off(filter, listener);
+    lb.unsub = () => readProvider.off(filter, listener);
   } catch (e) {
     console.warn("startTodayStream failed:", e);
   }
