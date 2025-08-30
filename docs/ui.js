@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.8.1 loaded");
+  console.log("MonoMine v13.8.2 loaded");
   await initGame();
   await debugEnvProbe();
 
@@ -105,6 +105,7 @@ async function connect() {
     // ensure Monad testnet
     try {
       const net = await provider.getNetwork();
+      await wireWriterWith({ provider, signer, account, chainId: Number(net.chainId) });
       if (Number(net.chainId) !== 10143) {
         try {
           await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });

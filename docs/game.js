@@ -45,6 +45,27 @@ function log(...args){ console.log("[MonoMine]", ...args); }
 export function short(addr) { return addr ? addr.slice(0,6) + "…" + addr.slice(-4) : "—"; }
 function shortHash(h){ return h ? `${h.slice(0,6)}…${h.slice(-4)}` : "—"; }
 
+// --- lightweight chainId cache to avoid rate-limiting ---
+let _chainIdCache = null;
+let _chainIdCacheAt = 0;
+async function getChainIdSafe(prov) {
+  const now = Date.now();
+  // reuse the cached value for 10s
+  if (_chainIdCache !== null && (now - _chainIdCacheAt) < 10000) return _chainIdCache;
+  try {
+    const net = await prov.getNetwork();
+    _chainIdCache = Number(net.chainId);
+    _chainIdCacheAt = now;
+    return _chainIdCache;
+  } catch {
+    return _chainIdCache; // may be null; callers should handle
+  }
+}
+
+
+
+
+
 // ---- ABI ----
 export async function loadAbi() {
   const j = await fetch("./contracts/MonoMine.json").then(r => r.json());
@@ -201,10 +222,24 @@ export const useRelay = () => (useRelayEl ? useRelayEl.checked : true);
 async function ensureMonadTestnet() {
   if (!window.ethereum) throw new Error("No wallet");
   const prov = new ethers.BrowserProvider(window.ethereum, "any");
-  const net = await prov.getNetwork();
-  if (Number(net.chainId) === 10143) return;
+
+  // use cached value if fresh
+  const cid = await getChainIdSafe(prov);
+  if (cid === 10143) return;
+
+  // if cache was stale or wrong, double-check once
+  try {
+    const net = await prov.getNetwork();
+    if (Number(net.chainId) === 10143) {
+      _chainIdCache = 10143; _chainIdCacheAt = Date.now();
+      return;
+    }
+  } catch { /* continue */ }
+
+  // switch (and add+switch if needed)
   try {
     await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
+    _chainIdCache = 10143; _chainIdCacheAt = Date.now();
   } catch (err) {
     if (err?.code === 4902) {
       await window.ethereum.request({
@@ -218,11 +253,13 @@ async function ensureMonadTestnet() {
         }]
       });
       await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
+      _chainIdCache = 10143; _chainIdCacheAt = Date.now();
     } else {
       throw err;
     }
   }
 }
+
 
 async function getCooldownRemaining(addr) {
   try {
@@ -564,7 +601,7 @@ async function backfillToday(dayNum) {
 
 function startTodayPolling(dayNum) {
   stopTodayStream();
-  const POLL_MS = 10000;
+  const POLL_MS = 15000;
   const CHUNK   = 100;
   const topic0  = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
   const topic1  = ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
@@ -665,10 +702,21 @@ export async function wireWriterWith(s) {
   signer   = s.signer;
   provider = s.provider;
   account  = s.account;
-  cachedChainId = null; // reset network cache on rewire
+
+  // try to prime the cache, but don't crash if it fails
+  try {
+    if (s.chainId != null) {
+      _chainIdCache = Number(s.chainId);
+      _chainIdCacheAt = Date.now();
+    } else if (provider) {
+      await getChainIdSafe(provider);
+    }
+  } catch {}
+
   const abi = await loadAbi();
   writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
 }
+
 
 // ---- Submit Modal (ARIA fix) ----
 function openSubmitModal(title = "Submitting…", body = "Preparing transaction…") {
@@ -698,7 +746,11 @@ function closeSubmitModal() {
 }
 
 // ---- Env probe ----
+let _envProbed = false;
+
 export async function debugEnvProbe() {
+  if (_envProbed) return;
+  _envProbed = true;
   try {
     const [cid, pf, rm, cd, es, pz] = await Promise.all([
       readProvider.getNetwork().then(n => n.chainId).catch(()=>null),
@@ -709,16 +761,11 @@ export async function debugEnvProbe() {
       contract.paused?.().catch(()=>null),
     ]);
     const passAddr = await contract.passport().catch(()=>null);
-    log("env probe:", {
-      chainId: cid,
-      trustedForwarder: pf,
-      relayManager: rm,
-      passport: passAddr,
-      cooldown: String(cd),
-      epochSeconds: String(es),
-      paused: pz
+    console.log("[MonoMine] env probe:", {
+      chainId: cid, trustedForwarder: pf, relayManager: rm,
+      passport: passAddr, cooldown: String(cd), epochSeconds: String(es), paused: pz
     });
   } catch (e) {
-    log("env probe failed:", e);
+    console.log("[MonoMine] env probe failed:", e);
   }
 }
