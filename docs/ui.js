@@ -3,7 +3,7 @@
 import {
   $$, PASSPORT_MINT_URL,
   EXPLORER_ADDR_PREFIX, RELAY_ENDPOINT,
-  initGame, refreshState, 
+  initGame, refreshState, wireWriterWith,
   toggleMine, updateRate, submitBest,
   hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually, debugEnvProbe, getPassportStatus
 } from "./game.js";
@@ -15,7 +15,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v13.8 loaded");
+  console.log("MonoMine v13.8.1 loaded");
   await initGame();
   await debugEnvProbe();
 

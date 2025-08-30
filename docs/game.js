@@ -660,6 +660,16 @@ export async function refreshTodayIfDayChanged() {
   } catch {}
 }
 
+// expose writer wiring for UI module
+export async function wireWriterWith(s) {
+  signer   = s.signer;
+  provider = s.provider;
+  account  = s.account;
+  cachedChainId = null; // reset network cache on rewire
+  const abi = await loadAbi();
+  writeContract = new ethers.Contract(MONOMINE_ADDRESS, abi, signer);
+}
+
 // ---- Submit Modal (ARIA fix) ----
 function openSubmitModal(title = "Submitting…", body = "Preparing transaction…") {
   const m = document.getElementById("submitModal");
