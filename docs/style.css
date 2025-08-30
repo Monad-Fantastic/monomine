@@ -99,3 +99,11 @@ footer { margin-top: 24px; text-align: center; opacity: .8; }
                border-radius: 14px; padding: 16px; width: min(720px, 94vw); outline: none; }
 .modal__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 button.small { padding: 6px 10px; font-size: 12px; }
+
+.tablewrap { overflow:auto; border:1px solid var(--border); border-radius:12px; }
+.table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
+.table th, .table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+.table thead th { position:sticky; top:0; background:var(--card); text-align:left; }
+.table tbody tr:last-child td { border-bottom:0; }
+.badge.ok { background:#11381f; color:#6ddb92; padding:2px 8px; border-radius:999px; border:1px solid #1f6a3a; }
+.badge.no { background:#3a1414; color:#ff9c9c; padding:2px 8px; border-radius:999px; border:1px solid #6a1f1f; }

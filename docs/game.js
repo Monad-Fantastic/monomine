@@ -50,6 +50,7 @@ export async function initGame() {
   const abi = await loadAbi();
   readProvider = new ethers.JsonRpcProvider(MONAD_RPC);
   contract = new ethers.Contract(MONOMINE_ADDRESS, abi, readProvider);
+  await initTodayLeaderboard();
 }
 
 export async function refreshState() {
@@ -69,6 +70,8 @@ export async function refreshState() {
         : `<a class="link" target="_blank" href="${EXPLORER_ADDR_PREFIX}${bestS.player}">${short(bestS.player)}</a> (FID ${bestS.fid}) @ ${bestS.bestHash}`;
       leaderEl.innerHTML = html;
     }
+
+    await refreshTodayIfDayChanged();
   } catch (e) {
     console.error(e);
   }
@@ -292,6 +295,7 @@ export async function submitBest() {
     }
 
     await refreshState();
+    
   } catch (e) {
     console.error("submitBest error:", e);
     put(decodeRpcError(e));
@@ -415,4 +419,133 @@ function reseedNonceCounter() {
   for (let i = 0; i < 8; i++) seed = (seed << 8n) | BigInt(b[i]);
   if (seed === 0n) seed = 1n;
   nonceCounter = (nonceCounter + seed) & ((1n << 256n) - 1n);
+}
+
+
+// ===== Today Leaderboard (client-side via events) =====
+const TOP_N = 50; // 50 is HUGE :) 
+
+let lb = {
+  day: null,
+  rows: new Map(),   // key: addr -> { addr, fid, bestHashBig, bestHash, submits, at }
+  unsub: null,
+  renderPending: false,
+};
+
+function big(h){ try { return BigInt(h); } catch { return (1n<<256n)-1n; } }
+function shortAddr(a){ return a ? a.slice(0,6)+"…"+a.slice(-4) : "—"; }
+function ago(ts){
+  const s = Math.max(0, Math.floor(Date.now()/1000 - Number(ts)));
+  if (s < 60) return `${s}s`; const m = Math.floor(s/60); if (m < 60) return `${m}m`;
+  const h = Math.floor(m/60); return `${h}h`;
+}
+
+export async function initTodayLeaderboard() {
+  lb.rows.clear();
+  lb.day = Number(await contract.day());
+  await backfillToday(lb.day);
+  startTodayStream(lb.day);
+  renderToday();
+}
+
+async function backfillToday(dayNum) {
+  try {
+    // narrow to since rolledAt (with a safety pad)
+    const rolledAt = Number(await contract.rolledAt?.()) || 0;
+    const nowSec   = Math.floor(Date.now()/1000);
+    const windowSec = Math.max(3600, nowSec - rolledAt + 60);
+    const latest = await readProvider.getBlockNumber();
+    const from   = Math.max(0, latest - windowSec); // ~1s blocks assumption
+    const to     = latest;
+
+    // event Submitted(uint256 indexed day, address player, uint256 fid, bytes32 h, uint256 at)
+    const filter = contract.filters.Submitted(dayNum);
+    const logs = await contract.queryFilter(filter, from, to);
+
+    for (const log of logs) {
+      const { player, fid, h, at } = log.args;
+      upsertRow(player, fid, h, at, false);
+    }
+  } catch (e) {
+    console.warn("backfillToday failed:", e);
+  }
+}
+
+function startTodayStream(dayNum) {
+  stopTodayStream();
+  try {
+    const filter = contract.filters.Submitted(dayNum);
+    const onLog = (log) => {
+      if (!log?.args) return;
+      const { player, fid, h, at } = log.args;
+      upsertRow(player, fid, h, at, true);
+    };
+    readProvider.on(filter, onLog);
+    lb.unsub = () => readProvider.off(filter, onLog);
+  } catch (e) {
+    console.warn("startTodayStream failed:", e);
+  }
+}
+
+function stopTodayStream() {
+  if (lb.unsub) { try { lb.unsub(); } catch {} lb.unsub = null; }
+}
+
+function upsertRow(player, fid, hash32, at, triggerRender) {
+  const key = player.toLowerCase();
+  const cur = lb.rows.get(key);
+  const hv  = big(hash32);
+  if (!cur) {
+    lb.rows.set(key, { addr: player, fid: Number(fid), bestHashBig: hv, bestHash: hash32, submits: 1, at: Number(at) });
+  } else {
+    cur.submits += 1;
+    if (hv < cur.bestHashBig || (hv === cur.bestHashBig && Number(at) < cur.at)) {
+      cur.bestHashBig = hv;
+      cur.bestHash    = hash32;
+      cur.at          = Number(at);
+    }
+  }
+  if (triggerRender) scheduleRender();
+}
+
+function scheduleRender() {
+  if (lb.renderPending) return;
+  lb.renderPending = true;
+  requestAnimationFrame(() => { lb.renderPending = false; renderToday(); });
+}
+
+function renderToday() {
+  const body = document.getElementById("todayTbody");
+  const meta = document.getElementById("lbMeta");
+  if (!body) return;
+
+  const rows = [...lb.rows.values()].sort((a,b) => {
+    if (a.bestHashBig < b.bestHashBig) return -1;
+    if (a.bestHashBig > b.bestHashBig) return  1;
+    return a.at - b.at;
+  }).slice(0, TOP_N);
+
+  body.innerHTML = rows.length
+    ? rows.map((r, i) => `
+      <tr>
+        <td>${i+1}</td>
+        <td><a class="link" target="_blank" href="${EXPLORER_ADDR_PREFIX}${r.addr}">${shortAddr(r.addr)}</a></td>
+        <td>${r.fid}</td>
+        <td><code>${r.bestHash}</code></td>
+        <td>${r.submits}</td>
+        <td class="muted small">${ago(r.at)} ago</td>
+      </tr>`).join("")
+    : `<tr><td colspan="6" class="muted">No submissions yet today.</td></tr>`;
+
+  if (meta) meta.textContent = `day ${lb.day} • top ${Math.min(rows.length, TOP_N)}`;
+}
+
+export async function refreshTodayIfDayChanged() {
+  try {
+    const d = Number(await contract.day());
+    if (d !== lb.day) {
+      stopTodayStream();
+      await initTodayLeaderboard();
+    }
+  } catch {}
 }
