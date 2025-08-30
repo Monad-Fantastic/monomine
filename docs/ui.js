@@ -13,7 +13,7 @@ document.addEventListener("DOMContentLoaded", initUI);
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v12.8 loaded");
+  console.log("MonoMine v12.9 loaded");
   await initGame();
 
   on("connectBtn", connect);

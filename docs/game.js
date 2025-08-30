@@ -606,14 +606,10 @@ export async function refreshTodayIfDayChanged() {
   } catch {}
 }
 
-// Event signature + topics
-const SUBMITTED_TOPIC = ethers.id("Submitted(uint256,address,uint256,bytes32,uint256)");
 
-
-
+const SUBMITTED_SIG = "Submitted(uint256,address,uint256,bytes32,uint256)";
 function submittedTopic() {
-  // safe after contract is constructed
-  return contract.interface.getEventTopic("Submitted");
+  return ethers.id(SUBMITTED_SIG);
 }
 function dayTopic(dayNum) {
   return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
