@@ -56,6 +56,8 @@ export async function initGame() {
   await initTodayLeaderboard();
 }
 
+document.getElementById("sm_close")?.addEventListener("click", () => closeSubmitModal());
+
 export async function refreshState() {
   try {
     const day   = await contract.day();
@@ -225,11 +227,21 @@ async function preflightSubmit(addr) {
         });
       } catch (err) {
         if (err?.code === 4902) {
-          await addMonadNetwork();
-          await window.ethereum.request({
+        await window.ethereum.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+            chainId: "0x279F",
+            chainName: "Monad Testnet",
+            rpcUrls: ["https://testnet-rpc.monad.xyz"],
+            nativeCurrency: { name: "MON", symbol: "MON", decimals: 18 },
+            blockExplorerUrls: ["https://testnet.monadexplorer.com/"]
+            }]
+        });
+        await window.ethereum.request({
             method: "wallet_switchEthereumChain",
             params: [{ chainId: "0x279F" }],
-          });
+        });
+        
         } else {
           throw new Error("Please switch to Monad Testnet (10143).");
         }
@@ -264,48 +276,83 @@ export async function submitBest() {
   if (!signer) await connect();
   if (!best.nonce) { put("Mine first to get a nonce."); return; }
 
+  // Modal: start
+  openSubmitModal("Submitting…", "Running preflight checks…");
+
   try {
     await preflightSubmit(account);
   } catch (why) {
-    put(String(why.message || why));
-    return;
+    const msg = String(why.message || why);
+    put(msg);
+    updateSubmitModal(msg);
+    return; // keep modal open so they can read
   }
 
   try {
     if (useRelay()) {
       put("Relaying (gasless)...");
+      updateSubmitModal("Sending through TMF relay…");
+
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data);
-      if (txMsg) {
-        txMsg.innerHTML = `Relay accepted: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a> · waiting confirm…`;
-      }
+
+      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${txHash.slice(0,6)}…${txHash.slice(-4)}</a>`;
+      updateSubmitModal("Relay accepted — waiting for confirmation…", link);
+
       const rec = await readProvider.waitForTransaction(txHash);
-      if (txMsg) {
-        txMsg.innerHTML = (rec && rec.status === 1)
-          ? `Confirmed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`
-          : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
+      if (rec && rec.status === 1) {
+        const okMsg = `Confirmed in block ${rec.blockNumber}`;
+        put(`Confirmed: ${txHash}`);
+        updateSubmitModal(okMsg, link);
+      } else {
+        const detail = await explainTxFailure(txHash, "Relay path");
+        const fail = `Tx failed`;
+        put(`${fail}: ${txHash}`);
+        updateSubmitModal(`${fail}. ${detail}`, link);
       }
     } else {
       put("Submitting tx…");
-      // give the node a concrete gas estimate; if estimate fails it will throw here (and we’ll surface a useful error)
+      updateSubmitModal("Submitting directly from your wallet…");
+
+    try {
+        await writeContract.submit.staticCall(best.nonce);
+        } catch (e) {
+        const msg = decodeRpcErrorVerbose(e);
+        put(msg);
+        updateSubmitModal(`Simulation reverted: ${msg}`);
+        return;
+}
+
+
+      // Concrete estimate to surface revert reasons early
       const gas = await writeContract.submit.estimateGas(best.nonce);
       const tx  = await writeContract.submit(best.nonce, { gasLimit: gas });
-      if (txMsg) txMsg.textContent = `Submitting… ${tx.hash}`;
+
+      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${tx.hash.slice(0,6)}…${tx.hash.slice(-4)}</a>`;
+      updateSubmitModal("Broadcasted — waiting for confirmation…", link);
+
       const rec = await tx.wait();
-      if (txMsg) {
-        txMsg.innerHTML = (rec && rec.status === 1)
-          ? `Submitted: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`
-          : `Tx failed: <a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
+      if (rec && rec.status === 1) {
+        const okMsg = `Confirmed in block ${rec.blockNumber}`;
+        put(`Submitted: ${tx.hash}`);
+        updateSubmitModal(okMsg, link);
+      } else {
+        const detail = await explainTxFailure(tx.hash, "Direct path");
+        const fail = `Tx failed`;
+        put(`${fail}: ${tx.hash}`);
+        updateSubmitModal(`${fail}. ${detail}`, link);
       }
     }
 
     await refreshState();
-
   } catch (e) {
     console.error("submitBest error:", e);
-    put(decodeRpcError(e));
+    const msg = decodeRpcErrorVerbose(e);
+    put(msg);
+    updateSubmitModal(msg);
   }
 }
+
 
 // Keep the jittered retry for the prioritization edge-case you saw (502/-32603).
 export async function submitViaRelay(calldata) {
@@ -613,4 +660,62 @@ function submittedTopic() {
 }
 function dayTopic(dayNum) {
   return ethers.zeroPadValue(ethers.toBeHex(dayNum), 32);
+}
+
+
+function openSubmitModal(title = "Submitting…", body = "Preparing transaction…") {
+  const m = document.getElementById("submitModal");
+  if (!m) return;
+  document.getElementById("sm_title").textContent = title;
+  document.getElementById("sm_body").textContent  = body;
+  document.getElementById("sm_link").innerHTML    = "";
+  m.hidden = false;
+}
+function updateSubmitModal(body, linkHtml) {
+  const b = document.getElementById("sm_body");
+  if (b) b.textContent = body;
+  if (linkHtml) {
+    const l = document.getElementById("sm_link");
+    if (l) l.innerHTML = linkHtml;
+  }
+}
+function closeSubmitModal() {
+  const m = document.getElementById("submitModal");
+  if (m) m.hidden = true;
+}
+
+// Explain a failure with concrete details
+async function explainTxFailure(txHash, extra = "") {
+  try {
+    const r = await readProvider.getTransactionReceipt(txHash);
+    if (!r) return `No receipt yet for ${txHash}. ${extra}`.trim();
+
+    const lines = [];
+    lines.push(`status=${r.status === 1 ? "success" : "failed"}`);
+    lines.push(`block=${r.blockNumber}`);
+    lines.push(`gasUsed=${r.gasUsed?.toString?.() ?? r.gasUsed}`);
+    if (r.from) lines.push(`from=${r.from}`);
+    if (r.to)   lines.push(`to=${r.to}`);
+    if (r.logs && r.logs.length) {
+      // Did we emit Submitted?
+      const hadSubmitted = r.logs.some(log => log.address.toLowerCase() === MONOMINE_ADDRESS.toLowerCase());
+      lines.push(`logs=${r.logs.length}${hadSubmitted ? " (Submitted seen)" : ""}`);
+    }
+    if (extra) lines.push(extra);
+
+    return lines.join(" • ");
+  } catch (e) {
+    return `Failed to fetch receipt: ${e?.message || e}`;
+  }
+}
+
+// Best-effort revert decoding for thrown errors
+function decodeRpcErrorVerbose(e) {
+  // Keep your friendly mapping first:
+  const basic = decodeRpcError(e);
+  // Then append raw low-level detail if present:
+  const raw = e?.data?.message || e?.info?.error?.message || e?.shortMessage || e?.message;
+  if (!raw) return basic;
+  if (basic && raw && !basic.includes(raw)) return `${basic} (${raw})`;
+  return basic || raw;
 }

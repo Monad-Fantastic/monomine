@@ -5,15 +5,17 @@ import {
   EXPLORER_ADDR_PREFIX, RELAY_ENDPOINT,
   initGame, refreshState, wireWriterWith,
   toggleMine, updateRate, submitBest,
-  hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually,
+  hasPassport, setPassportStatus, setTextEventually, enableEventually, showLinkEventually,rollIfNeeded
 } from "./game.js";
+
+import { ethers } from "https://esm.sh/ethers@6.13.2";
 
 document.addEventListener("DOMContentLoaded", initUI);
 
 function on(id, handler) { const el = $$(id); if (el) el.onclick = handler; }
 
 async function initUI() {
-  console.log("MonoMine v12.9 loaded");
+  console.log("MonoMine v13.0 loaded");
   await initGame();
 
   on("connectBtn", connect);
