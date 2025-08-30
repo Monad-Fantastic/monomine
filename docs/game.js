@@ -203,6 +203,18 @@ async function isPaused() {
   try { return await contract.paused(); } catch { return false; }
 }
 
+async function getFid(addr) {
+  try {
+    const passAddr = await contract.passport();
+    if (!passAddr || passAddr === ethers.ZeroAddress) return 0n;
+    const ipAbi = ["function fidOf(address) view returns (uint256)"];
+    const pass = new ethers.Contract(passAddr, ipAbi, readProvider);
+    const fid = await pass.fidOf(addr);
+    return BigInt(fid || 0);
+  } catch { return 0n; }
+}
+
+
 
 
 // --- submit path --------------------------------------------------------------
@@ -210,24 +222,18 @@ async function isPaused() {
 async function preflightSubmit(addr) {
   log("preflight: begin", { addr });
 
-  // 1) chain check
+  // 1) network
   try {
     if (!provider) throw new Error("No provider");
     const net = await provider.getNetwork();
     log("preflight: network", net?.chainId);
     if (Number(net.chainId) !== 10143) {
       try {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: "0x279F" }],
-        });
+        await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
       } catch (err) {
         if (err?.code === 4902) {
           await addMonadNetwork();
-          await window.ethereum.request({
-            method: "wallet_switchEthereumChain",
-            params: [{ chainId: "0x279F" }],
-          });
+          await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x279F" }] });
         } else {
           throw new Error("Please switch to Monad Testnet (10143).");
         }
@@ -237,15 +243,16 @@ async function preflightSubmit(addr) {
     throw new Error("Wallet is not on Monad Testnet (10143).");
   }
 
-  // 2) app/contract state
+  // 2) paused
   const paused = await isPaused();
   log("preflight: paused?", paused);
   if (paused) throw new Error("Game is currently paused.");
 
-  // 3) passport
+  // 3) passport + fid
   const has = await hasPassport(addr);
-  log("preflight: passport?", has);
-  if (!has) throw new Error("Passport not found — mint a TMF Passport first.");
+  const fid = await getFid(addr);
+  log("preflight: passport?", has, "fid=", String(fid));
+  if (!has || fid === 0n) throw new Error("Passport not found — mint a TMF Passport first.");
 
   // 4) cooldown
   const left = await getCooldownRemaining(addr);
@@ -262,7 +269,6 @@ export async function submitBest() {
   if (!signer) await connect();
   if (!best.nonce) { put("Mine first to get a nonce."); return; }
 
-  // Modal up + aria fix
   openSubmitModal("Submitting…", "Running preflight checks…");
 
   try {
@@ -272,70 +278,70 @@ export async function submitBest() {
     log("submit: preflight failed:", msg);
     put(msg);
     updateSubmitModal(msg);
-    return; // keep modal open so user can read
-  }
-
-  // Try simulating the call locally to catch reverts early (works for both paths)
-  try {
-    log("submit: staticCall simulation start", { nonce: best.nonce });
-    await writeContract.submit.staticCall(best.nonce);
-    log("submit: staticCall simulation ok");
-  } catch (e) {
-    const msg = decodeRpcErrorVerbose(e);
-    log("submit: staticCall simulation revert:", e);
-    put(msg);
-    updateSubmitModal(`Simulation reverted: ${msg}`);
     return;
   }
 
   try {
     if (useRelay()) {
+      // ⚠️ Do NOT simulate here — relay uses ERC-2771, different msg.sender/_msgSender
       put("Relaying (gasless)…");
       updateSubmitModal("Sending through TMF relay…");
 
-      // Estimate + cushion to avoid relay cap/OOG
-      const gasEst = await writeContract.submit.estimateGas(best.nonce).catch(()=>null);
-      const gasLimit = gasEst ? Math.ceil(Number(gasEst) * 1.25) : 300000; // fallback = old cap
+      // best-effort estimate → cushion → pass to relay
+      const gasEst   = await writeContract.submit.estimateGas(best.nonce).catch(()=>null);
+      const gasLimit = gasEst ? Math.ceil(Number(gasEst) * 1.25) : 300000;
       log("submit: relay gas estimate", { gasEst: String(gasEst||"n/a"), gasLimit });
 
       const data = writeContract.interface.encodeFunctionData("submit", [best.nonce]);
       const { txHash } = await submitViaRelay(data, gasLimit);
 
-      const linkHtml = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${shortHash(txHash)}</a>`;
-      updateSubmitModal("Relay accepted — waiting for confirmation…", linkHtml);
-      log("submit: relay accepted", txHash);
+      const link = `<a href="${EXPLORER_TX_PREFIX}${txHash}" target="_blank" class="link">${txHash.slice(0,6)}…${txHash.slice(-4)}</a>`;
+      updateSubmitModal("Relay accepted — waiting for confirmation…", link);
 
       const rec = await readProvider.waitForTransaction(txHash);
       log("submit: relay receipt", rec);
       if (rec && rec.status === 1) {
         put(`Confirmed: ${txHash}`);
-        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, linkHtml);
+        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, link);
       } else {
         const detail = await explainTxFailure(txHash, "Relay path");
         put(`Tx failed: ${txHash}`);
-        updateSubmitModal(`Tx failed. ${detail}`, linkHtml);
+        updateSubmitModal(`Tx failed. ${detail}`, link);
       }
     } else {
+      // Direct wallet path → safe to simulate
       put("Submitting tx…");
-      updateSubmitModal("Submitting directly from your wallet…");
+      updateSubmitModal("Simulating then broadcasting from your wallet…");
+
+      try {
+        log("submit: staticCall (direct) start", { nonce: best.nonce });
+        await writeContract.submit.staticCall(best.nonce);
+        log("submit: staticCall (direct) ok");
+      } catch (e) {
+        const msg = decodeRpcErrorVerbose(e);
+        log("submit: staticCall (direct) revert:", e);
+        put(msg);
+        updateSubmitModal(`Simulation reverted: ${msg}`);
+        return;
+      }
 
       const gas = await writeContract.submit.estimateGas(best.nonce);
       const gasLimit = Math.ceil(Number(gas) * 1.15);
       log("submit: direct gas estimate", { gas: String(gas), gasLimit });
 
       const tx  = await writeContract.submit(best.nonce, { gasLimit });
-      const linkHtml = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${shortHash(tx.hash)}</a>`;
-      updateSubmitModal("Broadcasted — waiting for confirmation…", linkHtml);
+      const link = `<a href="${EXPLORER_TX_PREFIX}${tx.hash}" target="_blank" class="link">${tx.hash.slice(0,6)}…${tx.hash.slice(-4)}</a>`;
+      updateSubmitModal("Broadcasted — waiting for confirmation…", link);
 
       const rec = await tx.wait();
       log("submit: direct receipt", rec);
       if (rec && rec.status === 1) {
         put(`Submitted: ${tx.hash}`);
-        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, linkHtml);
+        updateSubmitModal(`Confirmed in block ${rec.blockNumber}`, link);
       } else {
         const detail = await explainTxFailure(tx.hash, "Direct path");
         put(`Tx failed: ${tx.hash}`);
-        updateSubmitModal(`Tx failed. ${detail}`, linkHtml);
+        updateSubmitModal(`Tx failed. ${detail}`, link);
       }
     }
 
